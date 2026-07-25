@@ -71,6 +71,35 @@ class ParquetDatasetStore:
     def exists(self, dataset: Dataset, provider: str, as_of_date: date) -> bool:
         return self.data_path(dataset, provider, as_of_date).exists()
 
+    def read_range(
+        self,
+        dataset: Dataset,
+        provider: str,
+        start_date: date,
+        end_date: date,
+    ) -> pl.DataFrame:
+        provider_dir = self.root / dataset.value / f"provider={provider}"
+        if not provider_dir.exists():
+            raise FileNotFoundError(f"Dataset directory not found: {provider_dir}")
+
+        paths: list[Path] = []
+        for partition in provider_dir.glob("as_of_date=*"):
+            try:
+                partition_date = date.fromisoformat(partition.name.split("=", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            data_path = partition / "data.parquet"
+            if start_date <= partition_date <= end_date and data_path.exists():
+                paths.append(data_path)
+
+        if not paths:
+            raise FileNotFoundError(
+                f"No {dataset.value} partitions found from {start_date} to {end_date}."
+            )
+        return pl.scan_parquet(
+            [str(path) for path in sorted(paths)], hive_partitioning=False
+        ).collect()
+
 
 class DuckDBCatalog:
     """Small query facade; no persistent database is required."""

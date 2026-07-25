@@ -45,3 +45,22 @@ def test_duckdb_queries_parquet(tmp_path: Path) -> None:
     result = DuckDBCatalog().query_parquet(path, "SELECT ts_code, adj_factor FROM dataset")
 
     assert result.to_dicts() == [{"ts_code": "000001.SZ", "adj_factor": 1.5}]
+
+
+def test_store_reads_date_range(tmp_path: Path) -> None:
+    store = ParquetDatasetStore(tmp_path, "curated")
+    for day, factor in ((23, 1.0), (24, 1.1), (25, 1.2)):
+        batch = _batch(factor)
+        batch.as_of_date = date(2026, 7, day)
+        batch.frame = batch.frame.with_columns(pl.lit(f"202607{day:02d}").alias("trade_date"))
+        store.write(batch)
+
+    result = store.read_range(
+        Dataset.ADJUST_FACTORS,
+        "fake",
+        date(2026, 7, 23),
+        date(2026, 7, 24),
+    )
+
+    assert result.height == 2
+    assert result.get_column("adj_factor").to_list() == [1.0, 1.1]

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
+
+import polars as pl
 
 from qtrade.data.normalize import normalize_dataset
 from qtrade.data.providers.base import DataProvider
@@ -19,6 +22,8 @@ from qtrade.domain import (
     ValidationIssue,
     ValidationReport,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,6 +47,20 @@ class UpdateResult:
         return all(item.status == "completed" for item in self.datasets) and all(
             report.passed for report in self.reports
         )
+
+
+@dataclass
+class BackfillResult:
+    start_date: date
+    end_date: date
+    trading_dates: int
+    completed_dates: int = 0
+    skipped_dates: int = 0
+    failed_dates: list[date] = field(default_factory=list)
+
+    @property
+    def succeeded(self) -> bool:
+        return not self.failed_dates
 
 
 class DataIngestionService:
@@ -112,6 +131,82 @@ class DataIngestionService:
 
         write_validation_reports(self.reports_root, as_of_date, result.reports)
         self._write_manifest(result)
+        return result
+
+    def backfill(
+        self,
+        start_date: date,
+        end_date: date,
+        datasets: list[Dataset],
+    ) -> BackfillResult:
+        if start_date > end_date:
+            raise ValueError("Backfill start date must not be after end date.")
+
+        calendar_batch = self.provider.fetch(
+            Dataset.TRADE_CALENDAR,
+            FetchRequest(
+                as_of_date=end_date,
+                start_date=start_date,
+                end_date=end_date,
+            ),
+        )
+        self.raw_store.write(calendar_batch)
+        curated_calendar = normalize_dataset(Dataset.TRADE_CALENDAR, calendar_batch.frame)
+        self.curated_store.write(
+            DataBatch(
+                dataset=Dataset.TRADE_CALENDAR,
+                provider=calendar_batch.provider,
+                as_of_date=end_date,
+                frame=curated_calendar,
+                fetched_at=calendar_batch.fetched_at,
+                request={**calendar_batch.request, "normalized": True},
+            )
+        )
+        if {"cal_date", "is_open"} - set(curated_calendar.columns):
+            raise ValueError("Trade calendar is missing cal_date or is_open.")
+
+        open_dates = (
+            curated_calendar.with_columns(
+                pl.col("cal_date")
+                .cast(pl.String)
+                .str.replace_all("-", "")
+                .str.strptime(pl.Date, "%Y%m%d", strict=False),
+                pl.col("is_open").cast(pl.Int8, strict=False),
+            )
+            .filter((pl.col("is_open") == 1) & pl.col("cal_date").is_between(start_date, end_date))
+            .get_column("cal_date")
+            .to_list()
+        )
+        daily_datasets = [dataset for dataset in datasets if dataset != Dataset.TRADE_CALENDAR]
+        result = BackfillResult(start_date, end_date, trading_dates=len(open_dates))
+        for position, trading_date in enumerate(open_dates, start=1):
+            pending = [
+                dataset
+                for dataset in daily_datasets
+                if not self.curated_store.exists(dataset, self.provider.name, trading_date)
+            ]
+            if not pending:
+                result.skipped_dates += 1
+                LOGGER.debug(
+                    "Backfill %s/%s skipped %s",
+                    position,
+                    len(open_dates),
+                    trading_date,
+                )
+                continue
+            LOGGER.info(
+                "Backfill %s/%s updating %s (%s)",
+                position,
+                len(open_dates),
+                trading_date,
+                ", ".join(dataset.value for dataset in pending),
+            )
+            update_result = self.update(trading_date, pending)
+            if update_result.succeeded:
+                result.completed_dates += 1
+            else:
+                result.failed_dates.append(trading_date)
+                LOGGER.warning("Backfill failed for %s", trading_date)
         return result
 
     def validate_existing(

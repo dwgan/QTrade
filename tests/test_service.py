@@ -37,6 +37,36 @@ class FailingProvider:
         raise RuntimeError("provider unavailable")
 
 
+class BackfillProvider:
+    name = "fake"
+
+    def fetch(self, dataset: Dataset, request: FetchRequest) -> DataBatch:
+        if dataset == Dataset.TRADE_CALENDAR:
+            frame = pl.DataFrame(
+                {
+                    "exchange": ["SSE", "SSE", "SSE"],
+                    "cal_date": ["20260723", "20260724", "20260725"],
+                    "is_open": [1, 1, 0],
+                    "pretrade_date": ["20260722", "20260723", "20260724"],
+                }
+            )
+        else:
+            assert dataset == Dataset.ADJUST_FACTORS
+            frame = pl.DataFrame(
+                {
+                    "ts_code": ["000001.SZ"],
+                    "trade_date": [request.as_of_date.strftime("%Y%m%d")],
+                    "adj_factor": [1.0],
+                }
+            )
+        return DataBatch(
+            dataset=dataset,
+            provider=self.name,
+            as_of_date=request.as_of_date,
+            frame=frame,
+        )
+
+
 def make_service(tmp_path: Path, provider=None) -> DataIngestionService:
     return DataIngestionService(
         provider=provider or FakeProvider(),
@@ -78,3 +108,24 @@ def test_ingestion_failure_is_visible_in_manifest_and_quality_report(tmp_path: P
         (tmp_path / "reports/data-quality/2026-07-24/report.json").read_text(encoding="utf-8")
     )
     assert quality["passed"] is False
+
+
+def test_backfill_uses_open_dates_and_skips_existing_partitions(tmp_path: Path) -> None:
+    service = make_service(tmp_path, BackfillProvider())
+
+    first = service.backfill(
+        date(2026, 7, 23),
+        date(2026, 7, 25),
+        [Dataset.ADJUST_FACTORS],
+    )
+    second = service.backfill(
+        date(2026, 7, 23),
+        date(2026, 7, 25),
+        [Dataset.ADJUST_FACTORS],
+    )
+
+    assert first.succeeded
+    assert first.trading_dates == 2
+    assert first.completed_dates == 2
+    assert second.completed_dates == 0
+    assert second.skipped_dates == 2

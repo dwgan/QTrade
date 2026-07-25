@@ -1,6 +1,6 @@
 # QTrade
 
-QTrade 是一个面向个人研究的 A 股日线市场分析与决策辅助项目。第一阶段提供数据更新、标准化存储、质量检查和命令行入口。
+QTrade 是一个面向个人研究的 A 股日线市场分析与决策辅助项目。目前已提供数据更新、历史回填、质量检查、市场状态分析和日报输出。
 
 详细设计见 [项目文档](./docs/README.md)。
 
@@ -51,7 +51,21 @@ qtrade data validate --date 2026-07-24
 qtrade data datasets
 ```
 
-首次获取长区间历史数据将在后续迭代中加入。目前的 `update` 命令以“按交易日增量更新”为核心。
+为市场分析准备历史数据：
+
+```powershell
+qtrade data backfill --start 2025-01-01 --end 2026-07-24
+```
+
+回填命令先读取交易日历，只处理开市日期；已经完整落盘的日期会自动跳过，可以在中断后重跑。实际可获取的数据范围和调用频率取决于 Tushare 账户权限。
+
+生成市场分析：
+
+```powershell
+qtrade analyze market --date 2026-07-24
+```
+
+市场分析结果写入 `reports/market/YYYY-MM-DD`。至少需要约 120 个交易日的指数和股票日线数据；历史不足时仍会说明具体缺口，但不会输出市场温度。
 
 ## 数据位置
 
@@ -63,4 +77,3 @@ qtrade data datasets
 - `reports/data-quality`：数据质量报告
 
 相同日期和数据集重复更新时采用原子替换，不追加重复记录。
-

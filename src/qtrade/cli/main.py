@@ -12,6 +12,7 @@ from qtrade.data.service import DataIngestionService
 from qtrade.data.storage import ParquetDatasetStore
 from qtrade.data.validation import DataValidator
 from qtrade.domain import Dataset
+from qtrade.market.service import MarketAnalysisService
 
 
 def parse_date(value: str) -> date:
@@ -23,6 +24,8 @@ def parse_date(value: str) -> date:
 
 def parse_datasets(value: str | None, defaults: list[str]) -> list[Dataset]:
     names = defaults if value is None else [item.strip() for item in value.split(",")]
+    if not any(names):
+        raise ValueError("At least one dataset is required.")
     try:
         return list(dict.fromkeys(Dataset(name) for name in names if name))
     except ValueError as exc:
@@ -39,6 +42,16 @@ def build_service(config: AppConfig) -> DataIngestionService:
         curated_store=ParquetDatasetStore(config.paths.curated, "curated"),
         validator=DataValidator(config.validation),
         snapshots_root=config.paths.snapshots,
+        reports_root=config.paths.reports,
+    )
+
+
+def build_market_service(config: AppConfig) -> MarketAnalysisService:
+    config.paths.create()
+    return MarketAnalysisService(
+        config=config.market,
+        curated_store=ParquetDatasetStore(config.paths.curated, "curated"),
+        provider=config.provider.name,
         reports_root=config.paths.reports,
     )
 
@@ -60,7 +73,23 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--date", required=True, type=parse_date)
     validate.add_argument("--datasets", help="Comma-separated dataset names")
 
+    backfill = data_commands.add_parser(
+        "backfill", help="Backfill daily datasets over a date range"
+    )
+    backfill.add_argument("--start", required=True, type=parse_date)
+    backfill.add_argument("--end", required=True, type=parse_date)
+    backfill.add_argument(
+        "--datasets",
+        default="daily_prices,adjust_factors,index_daily",
+        help="Comma-separated daily dataset names",
+    )
+
     data_commands.add_parser("datasets", help="List supported datasets")
+
+    analyze = commands.add_parser("analyze", help="Research analysis")
+    analyze_commands = analyze.add_subparsers(dest="analyze_command", required=True)
+    market = analyze_commands.add_parser("market", help="Generate daily market analysis")
+    market.add_argument("--date", required=True, type=parse_date)
     return parser
 
 
@@ -88,6 +117,18 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     config = load_config(Path(args.config))
+    if args.command == "analyze" and args.analyze_command == "market":
+        try:
+            result = build_market_service(config).run(args.date)
+            analysis = result.analysis
+            temperature = analysis.temperature if analysis.temperature is not None else "N/A"
+            print(f"Market state: {analysis.state.value}; temperature: {temperature}")
+            print(f"Report: {result.markdown_path}")
+            return 0 if analysis.temperature is not None else 1
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
     try:
         datasets = parse_datasets(args.datasets, config.update.datasets)
     except ValueError as exc:
@@ -99,6 +140,20 @@ def run(args: argparse.Namespace) -> int:
         if args.data_command == "update":
             result = service.update(args.date, datasets)
             _print_update(result)
+            return 0 if result.succeeded else 1
+        if args.data_command == "backfill":
+            result = service.backfill(args.start, args.end, datasets)
+            print(
+                f"Trading dates: {result.trading_dates}; completed: "
+                f"{result.completed_dates}; skipped: {result.skipped_dates}; "
+                f"failed: {len(result.failed_dates)}"
+            )
+            if result.failed_dates:
+                print(
+                    "Failed dates: "
+                    + ", ".join(value.isoformat() for value in result.failed_dates),
+                    file=sys.stderr,
+                )
             return 0 if result.succeeded else 1
 
         reports = service.validate_existing(args.date, datasets)

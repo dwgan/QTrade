@@ -50,11 +50,30 @@ class ProviderConfig(BaseModel):
 class MarketConfig(BaseModel):
     exchange: str = "SSE"
     index_codes: list[str] = Field(default_factory=lambda: ["000300.SH", "000905.SH", "000852.SH"])
+    primary_index_code: str = "000300.SH"
+    history_calendar_days: int = Field(default=500, ge=250)
+    minimum_history_days: int = Field(default=120, ge=60)
+    minimum_breadth_stocks: int = Field(default=100, ge=1)
+    attack_threshold: float = Field(default=70, ge=0, le=100)
+    balanced_threshold: float = Field(default=50, ge=0, le=100)
+    defensive_threshold: float = Field(default=30, ge=0, le=100)
 
     @field_validator("index_codes")
     @classmethod
     def unique_index_codes(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(value))
+
+    @field_validator("defensive_threshold")
+    @classmethod
+    def ordered_thresholds(cls, value: float, info) -> float:
+        data = info.data
+        if (
+            "attack_threshold" in data
+            and "balanced_threshold" in data
+            and not data["attack_threshold"] > data["balanced_threshold"] > value
+        ):
+            raise ValueError("Market thresholds must satisfy attack > balanced > defensive.")
+        return value
 
 
 class UpdateConfig(BaseModel):

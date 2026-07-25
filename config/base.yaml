@@ -21,6 +21,13 @@ market:
     - 000300.SH
     - 000905.SH
     - 000852.SH
+  primary_index_code: 000300.SH
+  history_calendar_days: 500
+  minimum_history_days: 120
+  minimum_breadth_stocks: 100
+  attack_threshold: 70
+  balanced_threshold: 50
+  defensive_threshold: 30
 
 update:
   datasets:
@@ -35,4 +42,3 @@ update:
 validation:
   minimum_daily_rows: 100
   fail_on_warning: false
-
