@@ -12,6 +12,7 @@ from qtrade.data.service import DataIngestionService
 from qtrade.data.storage import ParquetDatasetStore
 from qtrade.data.validation import DataValidator
 from qtrade.domain import Dataset
+from qtrade.industry.service import IndustryAnalysisService
 from qtrade.market.service import MarketAnalysisService
 
 
@@ -56,6 +57,17 @@ def build_market_service(config: AppConfig) -> MarketAnalysisService:
     )
 
 
+def build_industry_service(config: AppConfig) -> IndustryAnalysisService:
+    config.paths.create()
+    return IndustryAnalysisService(
+        config=config.industry,
+        benchmark_code=config.market.primary_index_code,
+        curated_store=ParquetDatasetStore(config.paths.curated, "curated"),
+        provider=config.provider.name,
+        reports_root=config.paths.reports,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qtrade", description="QTrade research toolkit")
     parser.add_argument("--config", default="config/base.yaml", help="YAML configuration path")
@@ -90,6 +102,10 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_commands = analyze.add_subparsers(dest="analyze_command", required=True)
     market = analyze_commands.add_parser("market", help="Generate daily market analysis")
     market.add_argument("--date", required=True, type=parse_date)
+    industry = analyze_commands.add_parser(
+        "industry", help="Generate daily industry and style analysis"
+    )
+    industry.add_argument("--date", required=True, type=parse_date)
     return parser
 
 
@@ -117,14 +133,24 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     config = load_config(Path(args.config))
-    if args.command == "analyze" and args.analyze_command == "market":
+    if args.command == "analyze":
         try:
-            result = build_market_service(config).run(args.date)
-            analysis = result.analysis
-            temperature = analysis.temperature if analysis.temperature is not None else "N/A"
-            print(f"Market state: {analysis.state.value}; temperature: {temperature}")
+            if args.analyze_command == "market":
+                result = build_market_service(config).run(args.date)
+                analysis = result.analysis
+                temperature = analysis.temperature if analysis.temperature is not None else "N/A"
+                print(f"Market state: {analysis.state.value}; temperature: {temperature}")
+                succeeded = analysis.temperature is not None
+            else:
+                result = build_industry_service(config).run(args.date)
+                analysis = result.analysis
+                print(
+                    f"Industries: {len(analysis.industries)}; "
+                    f"confidence: {analysis.data_confidence}"
+                )
+                succeeded = bool(analysis.industries)
             print(f"Report: {result.markdown_path}")
-            return 0 if analysis.temperature is not None else 1
+            return 0 if succeeded else 1
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1

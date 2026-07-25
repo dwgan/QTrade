@@ -80,6 +80,19 @@ class UpdateConfig(BaseModel):
     datasets: list[str] = Field(default_factory=list)
 
 
+class IndustryConfig(BaseModel):
+    classification_column: str = "industry"
+    minimum_stocks: int = Field(default=5, ge=2)
+    top_count: int = Field(default=10, ge=1)
+    history_calendar_days: int = Field(default=180, ge=100)
+    style_pairs: dict[str, tuple[str, str]] = Field(
+        default_factory=lambda: {
+            "mid_vs_large": ("000905.SH", "000300.SH"),
+            "small_vs_large": ("000852.SH", "000300.SH"),
+        }
+    )
+
+
 class ValidationConfig(BaseModel):
     minimum_daily_rows: int = Field(default=100, ge=0)
     fail_on_warning: bool = False
@@ -90,6 +103,7 @@ class AppConfig(BaseModel):
     paths: PathConfig = Field(default_factory=PathConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     market: MarketConfig = Field(default_factory=MarketConfig)
+    industry: IndustryConfig = Field(default_factory=IndustryConfig)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     project_root: Path = Field(default=Path.cwd(), exclude=True)

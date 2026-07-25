@@ -64,3 +64,20 @@ def test_store_reads_date_range(tmp_path: Path) -> None:
 
     assert result.height == 2
     assert result.get_column("adj_factor").to_list() == [1.0, 1.1]
+
+
+def test_store_reads_latest_partition_on_or_before_date(tmp_path: Path) -> None:
+    store = ParquetDatasetStore(tmp_path, "curated")
+    for day, factor in ((23, 1.0), (25, 1.2)):
+        batch = _batch(factor)
+        batch.as_of_date = date(2026, 7, day)
+        store.write(batch)
+
+    partition_date, result = store.read_latest_on_or_before(
+        Dataset.ADJUST_FACTORS,
+        "fake",
+        date(2026, 7, 24),
+    )
+
+    assert partition_date == date(2026, 7, 23)
+    assert result.get_column("adj_factor").item() == 1.0

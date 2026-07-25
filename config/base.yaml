@@ -29,6 +29,19 @@ market:
   balanced_threshold: 50
   defensive_threshold: 30
 
+industry:
+  classification_column: industry
+  minimum_stocks: 5
+  top_count: 10
+  history_calendar_days: 180
+  style_pairs:
+    mid_vs_large:
+      - 000905.SH
+      - 000300.SH
+    small_vs_large:
+      - 000852.SH
+      - 000300.SH
+
 update:
   datasets:
     - trade_calendar

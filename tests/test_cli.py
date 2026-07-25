@@ -12,6 +12,14 @@ def test_market_analysis_command_parses() -> None:
     assert args.date == date(2026, 7, 24)
 
 
+def test_industry_analysis_command_parses() -> None:
+    args = build_parser().parse_args(["analyze", "industry", "--date", "2026-07-24"])
+
+    assert args.command == "analyze"
+    assert args.analyze_command == "industry"
+    assert args.date == date(2026, 7, 24)
+
+
 def test_backfill_command_parses_default_datasets() -> None:
     args = build_parser().parse_args(
         ["data", "backfill", "--start", "2026-01-01", "--end", "2026-07-24"]
