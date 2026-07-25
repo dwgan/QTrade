@@ -1,0 +1,26 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local datasets, generated reports and runtime state
+/data/
+/reports/
+/runtime/
+
+# DuckDB local files
+*.duckdb
+*.duckdb.wal
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

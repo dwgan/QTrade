@@ -1,0 +1,38 @@
+app:
+  name: qtrade
+  timezone: Asia/Shanghai
+
+paths:
+  raw: data/raw
+  curated: data/curated
+  snapshots: data/snapshots
+  reports: reports
+  runtime: runtime
+
+provider:
+  name: tushare
+  token_env: TUSHARE_TOKEN
+  request_pause_seconds: 0.2
+  retry_attempts: 3
+
+market:
+  exchange: SSE
+  index_codes:
+    - 000300.SH
+    - 000905.SH
+    - 000852.SH
+
+update:
+  datasets:
+    - trade_calendar
+    - security_master
+    - security_names
+    - daily_prices
+    - adjust_factors
+    - index_daily
+    - index_members
+
+validation:
+  minimum_daily_rows: 100
+  fail_on_warning: false
+
