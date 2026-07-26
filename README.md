@@ -37,6 +37,10 @@ $env:TUSHARE_API_URL = "https://your-compatible-endpoint.example/api"
 
 推荐通过本地操作界面使用：
 
+Windows 用户可以直接双击项目根目录的 `start_qtrade.cmd`。
+
+也可以在 PowerShell 中启动：
+
 ```powershell
 .\.venv\Scripts\python.exe -m qtrade ui
 ```
