@@ -405,7 +405,10 @@ class TemporalLeakageAuditor:
         issues: list[LeakageIssue] = []
         checked: set[str] = set()
         warnings: list[str] = []
+        missing_available_from = 0
         for snapshot_date, frame in snapshots:
+            if "available_from" not in frame.columns:
+                missing_available_from += 1
             columns = [name for name in cls.AVAILABILITY_COLUMNS if name in frame.columns]
             if not columns:
                 continue
@@ -431,6 +434,11 @@ class TemporalLeakageAuditor:
                             latest_value=future.max(),
                         )
                     )
+        if snapshots and missing_available_from:
+            warnings.append(
+                f"{missing_available_from}/{len(snapshots)} ranking snapshots lack "
+                "available_from; complete input lineage cannot be verified."
+            )
         if snapshots and not checked:
             warnings.append(
                 "Ranking snapshots contain no availability column; upstream point-in-time "

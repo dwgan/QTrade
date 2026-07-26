@@ -130,6 +130,7 @@ def test_factor_ranking_generates_bounded_candidates() -> None:
         industry_counts[candidate.industry] = industry_counts.get(candidate.industry, 0) + 1
     assert max(industry_counts.values()) <= 2
     assert computation.rankings.height == 16
+    assert computation.rankings.get_column("available_from").max() <= AS_OF_DATE
 
 
 def test_future_financial_announcement_is_not_used() -> None:
@@ -161,6 +162,19 @@ def test_future_financial_announcement_is_not_used() -> None:
         computation.rankings.filter(pl.col("ts_code") == "000001.SZ").get_column("ann_date").item()
     )
     assert first_stock == date(2026, 4, 30)
+
+
+def test_same_day_financial_announcement_is_not_available_at_close() -> None:
+    financials = factor_inputs()[3].head(1).with_columns(
+        pl.lit(AS_OF_DATE.strftime("%Y%m%d")).alias("ann_date")
+    )
+
+    prepared = FactorAnalyzer(FactorConfig())._prepare_financials(
+        financials,
+        AS_OF_DATE,
+    )
+
+    assert prepared.is_empty()
 
 
 def test_risk_filters_exclude_st_and_financial_industry() -> None:

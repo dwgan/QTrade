@@ -191,6 +191,11 @@ class ResearchService:
                     f"Temporal leakage detected in {first.column}: "
                     f"{first.offending_rows} rows on snapshot {first.snapshot_date}."
                 )
+            if protocol is not None and audit.warnings:
+                raise ValueError(
+                    "Formal backtest requires complete point-in-time ranking provenance: "
+                    + " ".join(audit.warnings)
+                )
             prices = self.curated_store.read_range(
                 Dataset.DAILY_PRICES, self.provider, start_date, end_date
             )

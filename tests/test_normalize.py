@@ -1,3 +1,5 @@
+from datetime import date
+
 import polars as pl
 
 from qtrade.data.normalize import normalize_dataset
@@ -39,3 +41,40 @@ def test_normalize_financials_drops_rows_without_point_in_time_keys() -> None:
 
     assert result.height == 1
     assert result.get_column("ts_code").to_list() == ["000001.SZ"]
+
+
+def test_normalize_financials_are_available_after_announcement_day() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_code": ["000001.SZ"],
+            "ann_date": ["20260430"],
+            "end_date": ["20260331"],
+            "roe": [10.0],
+        }
+    )
+
+    result = normalize_dataset(
+        Dataset.FINANCIAL_INDICATORS,
+        frame,
+        date(2026, 7, 24),
+    )
+
+    assert result.get_column("available_from").item() == "20260501"
+
+
+def test_normalize_security_master_uses_snapshot_date_for_availability() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_code": ["000001.SZ"],
+            "list_status": ["L"],
+            "list_date": ["19910403"],
+        }
+    )
+
+    result = normalize_dataset(
+        Dataset.SECURITY_MASTER,
+        frame,
+        date(2026, 7, 24),
+    )
+
+    assert result.get_column("available_from").item() == "20260724"

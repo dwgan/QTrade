@@ -61,3 +61,14 @@ def test_non_numeric_price_fails() -> None:
     report = validator.validate(Dataset.DAILY_PRICES, date(2026, 7, 24), frame)
 
     assert any(issue.code == "invalid_numeric_value" for issue in report.issues)
+
+
+def test_future_available_from_fails_validation() -> None:
+    frame = valid_daily_frame().with_columns(
+        pl.lit("20260725").alias("available_from")
+    )
+    validator = DataValidator(ValidationConfig(minimum_daily_rows=1))
+
+    report = validator.validate(Dataset.DAILY_PRICES, date(2026, 7, 24), frame)
+
+    assert any(issue.code == "future_available_from" for issue in report.issues)

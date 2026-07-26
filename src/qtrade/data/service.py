@@ -114,7 +114,7 @@ class DataIngestionService:
                 raw_batch = self.provider.fetch(dataset, FetchRequest(as_of_date=as_of_date))
                 raw_path = self.raw_store.write(raw_batch)
 
-                curated_frame = normalize_dataset(dataset, raw_batch.frame)
+                curated_frame = normalize_dataset(dataset, raw_batch.frame, as_of_date)
                 curated_batch = DataBatch(
                     dataset=dataset,
                     provider=raw_batch.provider,
@@ -177,7 +177,11 @@ class DataIngestionService:
             ),
         )
         self.raw_store.write(calendar_batch)
-        curated_calendar = normalize_dataset(Dataset.TRADE_CALENDAR, calendar_batch.frame)
+        curated_calendar = normalize_dataset(
+            Dataset.TRADE_CALENDAR,
+            calendar_batch.frame,
+            end_date,
+        )
         self.curated_store.write(
             DataBatch(
                 dataset=Dataset.TRADE_CALENDAR,
@@ -248,7 +252,7 @@ class DataIngestionService:
                 FetchRequest(as_of_date=as_of_date, periods=periods),
             )
             raw_path = self.raw_store.write(raw_batch)
-            curated_frame = normalize_dataset(dataset, raw_batch.frame)
+            curated_frame = normalize_dataset(dataset, raw_batch.frame, as_of_date)
             curated_batch = DataBatch(
                 dataset=dataset,
                 provider=raw_batch.provider,

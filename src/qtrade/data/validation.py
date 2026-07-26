@@ -106,7 +106,43 @@ class DataValidator:
                 )
             )
 
+        if "available_from" in frame.columns:
+            self._validate_available_from(frame, as_of_date, report)
+
         return report
+
+    @staticmethod
+    def _validate_available_from(
+        frame: pl.DataFrame,
+        as_of_date: date,
+        report: ValidationReport,
+    ) -> None:
+        available = (
+            pl.col("available_from")
+            .cast(pl.String)
+            .str.replace_all("-", "")
+            .str.strptime(pl.Date, "%Y%m%d", strict=False)
+        )
+        invalid = frame.filter(available.is_null()).height
+        if invalid:
+            report.issues.append(
+                ValidationIssue(
+                    Severity.ERROR,
+                    "invalid_available_from",
+                    "available_from must contain a valid date.",
+                    rows=invalid,
+                )
+            )
+        future = frame.filter(available > as_of_date).height
+        if future:
+            report.issues.append(
+                ValidationIssue(
+                    Severity.ERROR,
+                    "future_available_from",
+                    "Rows were not available on the requested snapshot date.",
+                    rows=future,
+                )
+            )
 
     @staticmethod
     def _validate_trade_date(

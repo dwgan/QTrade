@@ -53,13 +53,21 @@ class FactorAnalyzer:
         price_metrics = self._price_metrics(prices, adjust_factors, as_of_date)
         basic = self._prepare_daily_basic(daily_basic, as_of_date)
         financials = self._prepare_financials(financial_indicators, as_of_date)
-        master = self._prepare_master(security_master)
+        master = self._prepare_master(security_master, as_of_date)
         limits = self._prepare_limits(stock_limits, as_of_date)
 
         joined = (
             price_metrics.join(basic, on="ts_code", how="left")
             .join(financials, on="ts_code", how="left")
             .join(master, on="ts_code", how="left")
+            .with_columns(
+                pl.max_horizontal(
+                    "price_available_from",
+                    "daily_basic_available_from",
+                    "financial_available_from",
+                    "security_master_available_from",
+                ).alias("available_from")
+            )
         )
         if limits is not None:
             joined = joined.join(limits, on="ts_code", how="left")
@@ -156,6 +164,7 @@ class FactorAnalyzer:
                 "low_risk_score",
                 "ann_date",
                 "end_date",
+                "available_from",
             ),
         )
 
@@ -207,6 +216,7 @@ class FactorAnalyzer:
             history.group_by("ts_code")
             .agg(
                 pl.col("trade_date").last().alias("latest_date"),
+                pl.col("trade_date").last().alias("price_available_from"),
                 pl.col("close").last().alias("close"),
                 pl.col("amount").tail(20).mean().alias("avg_amount_20d"),
                 (
@@ -251,13 +261,22 @@ class FactorAnalyzer:
         if missing := columns - set(frame.columns):
             raise ValueError(f"Daily basic data are missing columns: {', '.join(sorted(missing))}")
         numeric = columns - {"ts_code", "trade_date"}
+        availability = (
+            self._date_expression("available_from")
+            if "available_from" in frame.columns
+            else self._date_expression("trade_date")
+        )
         return (
             frame.select(
                 pl.col("ts_code").cast(pl.String),
                 self._date_expression("trade_date"),
+                availability.alias("daily_basic_available_from"),
                 *[pl.col(column).cast(pl.Float64, strict=False) for column in numeric],
             )
-            .filter(pl.col("trade_date") <= as_of_date)
+            .filter(
+                (pl.col("trade_date") <= as_of_date)
+                & (pl.col("daily_basic_available_from") <= as_of_date)
+            )
             .sort(["ts_code", "trade_date"])
             .unique(subset=["ts_code"], keep="last")
         )
@@ -280,29 +299,50 @@ class FactorAnalyzer:
                 f"Financial indicators are missing columns: {', '.join(sorted(missing))}"
             )
         numeric = columns - {"ts_code", "ann_date", "end_date"}
+        availability = (
+            self._date_expression("available_from")
+            if "available_from" in frame.columns
+            else self._date_expression("ann_date") + pl.duration(days=1)
+        )
         return (
             frame.select(
                 pl.col("ts_code").cast(pl.String),
                 self._date_expression("ann_date"),
                 self._date_expression("end_date"),
+                availability.alias("financial_available_from"),
                 *[pl.col(column).cast(pl.Float64, strict=False) for column in numeric],
             )
-            .filter(pl.col("ann_date").is_not_null() & (pl.col("ann_date") <= as_of_date))
+            .filter(
+                pl.col("ann_date").is_not_null()
+                & pl.col("financial_available_from").is_not_null()
+                & (pl.col("financial_available_from") <= as_of_date)
+            )
             .sort(["ts_code", "ann_date", "end_date"])
             .unique(subset=["ts_code"], keep="last")
         )
 
     @staticmethod
-    def _prepare_master(frame: pl.DataFrame) -> pl.DataFrame:
+    def _prepare_master(frame: pl.DataFrame, as_of_date: date) -> pl.DataFrame:
         columns = {"ts_code", "name", "industry", "list_date"}
         if missing := columns - set(frame.columns):
             raise ValueError(f"Security master is missing columns: {', '.join(sorted(missing))}")
-        return frame.select(
-            pl.col("ts_code").cast(pl.String),
-            pl.col("name").cast(pl.String),
-            pl.col("industry").cast(pl.String),
-            FactorAnalyzer._date_expression("list_date"),
-        ).unique(subset=["ts_code"], keep="last")
+        availability = (
+            FactorAnalyzer._date_expression("available_from")
+            if "available_from" in frame.columns
+            else FactorAnalyzer._date_expression("list_date")
+        )
+        return (
+            frame.select(
+                pl.col("ts_code").cast(pl.String),
+                pl.col("name").cast(pl.String),
+                pl.col("industry").cast(pl.String),
+                FactorAnalyzer._date_expression("list_date"),
+                availability.alias("security_master_available_from"),
+            )
+            .filter(pl.col("security_master_available_from") <= as_of_date)
+            .sort(["ts_code", "security_master_available_from"])
+            .unique(subset=["ts_code"], keep="last")
+        )
 
     @staticmethod
     def _prepare_limits(frame: pl.DataFrame | None, as_of_date: date) -> pl.DataFrame | None:

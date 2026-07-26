@@ -5,6 +5,8 @@ import polars as pl
 import pytest
 import yaml
 
+from qtrade.config import BacktestConfig, ResearchConfig
+from qtrade.data.storage import ParquetDatasetStore
 from qtrade.research.protocols import (
     ExperimentRecord,
     ExperimentStatus,
@@ -16,6 +18,7 @@ from qtrade.research.protocols import (
     StrategyProtocol,
     TemporalLeakageAuditor,
 )
+from qtrade.research.service import ResearchService
 
 
 def make_protocol(protocol_id: str = "quality_v1") -> StrategyProtocol:
@@ -107,6 +110,22 @@ def test_temporal_leakage_audit_rejects_future_availability() -> None:
     assert audit.issues[0].latest_value == date(2024, 5, 6)
 
 
+def test_temporal_leakage_audit_warns_when_complete_lineage_is_missing() -> None:
+    ranking = pl.DataFrame(
+        {
+            "ts_code": ["000001.SZ"],
+            "ann_date": ["20240429"],
+        }
+    )
+
+    audit = TemporalLeakageAuditor.audit_snapshots(
+        [(date(2024, 4, 30), ranking)]
+    )
+
+    assert audit.passed
+    assert any("lack available_from" in warning for warning in audit.warnings)
+
+
 def test_experiment_failures_are_retained(tmp_path: Path) -> None:
     store = ExperimentStore(tmp_path)
     record = store.create(
@@ -125,3 +144,54 @@ def test_experiment_failures_are_retained(tmp_path: Path) -> None:
 
     assert failed.status == ExperimentStatus.FAILED
     assert store.list("quality_v1")[0].error == "missing point-in-time universe"
+
+
+def test_formal_backtest_rejects_rankings_without_complete_lineage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    reports = tmp_path / "reports"
+    ranking_directory = reports / "factors/2018-01-02"
+    ranking_directory.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "ts_code": ["000001.SZ"],
+            "industry": ["A"],
+            "score": [100.0],
+            "ann_date": ["20171231"],
+        }
+    ).write_parquet(ranking_directory / "rankings.parquet")
+    service = ResearchService(
+        research_config=ResearchConfig(),
+        backtest_config=BacktestConfig(),
+        curated_store=ParquetDatasetStore(tmp_path / "curated", "curated"),
+        provider="fake",
+        reports_root=reports,
+        runtime_root=tmp_path / "runtime",
+        project_root=tmp_path,
+        factor_config={},
+    )
+    protocol = make_protocol("strict_v1").model_copy(
+        update={
+            "code_commit": "unknown",
+            "config_hash": service.config_hash(),
+        }
+    )
+    service.protocols.create(protocol)
+    service.protocols.freeze("strict_v1")
+    monkeypatch.setattr(
+        "qtrade.research.service.git_research_tree_is_clean",
+        lambda _: True,
+    )
+
+    with pytest.raises(ValueError, match="complete point-in-time"):
+        service.backtest_candidates(
+            date(2018, 1, 1),
+            date(2020, 12, 31),
+            protocol_id="strict_v1",
+            partition=PartitionName.DEVELOPMENT,
+        )
+
+    experiments = service.experiments.list("strict_v1")
+    assert len(experiments) == 1
+    assert experiments[0].status == ExperimentStatus.FAILED
