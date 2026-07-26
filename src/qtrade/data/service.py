@@ -65,6 +65,30 @@ class BackfillResult:
         return not self.failed_dates
 
 
+@dataclass(frozen=True)
+class CoverageItem:
+    dataset: Dataset
+    frequency: str
+    expected_dates: int
+    existing_dates: int
+    missing_dates: tuple[date, ...]
+
+    @property
+    def complete(self) -> bool:
+        return not self.missing_dates
+
+
+@dataclass(frozen=True)
+class CoverageResult:
+    start_date: date
+    end_date: date
+    items: tuple[CoverageItem, ...]
+
+    @property
+    def complete(self) -> bool:
+        return all(item.complete for item in self.items)
+
+
 class StoredDataValidationService:
     def __init__(
         self,
@@ -92,6 +116,16 @@ class StoredDataValidationService:
 
 
 class DataIngestionService:
+    RESEARCH_FREQUENCIES = {
+        Dataset.DAILY_PRICES: "daily",
+        Dataset.ADJUST_FACTORS: "daily",
+        Dataset.STOCK_LIMIT: "daily",
+        Dataset.INDEX_DAILY: "daily",
+        Dataset.DAILY_BASIC: "month_end",
+        Dataset.INDEX_MEMBERS: "month_end",
+        Dataset.FINANCIAL_INDICATORS: "month_end",
+    }
+
     def __init__(
         self,
         provider: DataProvider,
@@ -531,6 +565,64 @@ class DataIngestionService:
             )
             result.completed_dates += 1
         return result
+
+    def research_coverage(
+        self,
+        start_date: date,
+        end_date: date,
+    ) -> CoverageResult:
+        if start_date > end_date:
+            raise ValueError("Coverage start date must not be after end date.")
+        _, calendar = self.curated_store.read_latest(
+            Dataset.TRADE_CALENDAR,
+            self.provider.name,
+        )
+        if {"cal_date", "is_open"} - set(calendar.columns):
+            raise ValueError("Trade calendar is missing cal_date or is_open.")
+        daily_dates = (
+            calendar.with_columns(
+                pl.col("cal_date")
+                .cast(pl.String)
+                .str.replace_all("-", "")
+                .str.strptime(pl.Date, "%Y%m%d", strict=False),
+                pl.col("is_open").cast(pl.Int8, strict=False),
+            )
+            .filter(
+                (pl.col("is_open") == 1)
+                & pl.col("cal_date").is_between(start_date, end_date)
+            )
+            .get_column("cal_date")
+            .unique()
+            .sort()
+            .to_list()
+        )
+        month_ends: dict[tuple[int, int], date] = {}
+        for trading_date in daily_dates:
+            month_ends[(trading_date.year, trading_date.month)] = trading_date
+        expected_by_frequency = {
+            "daily": set(daily_dates),
+            "month_end": set(month_ends.values()),
+        }
+        items: list[CoverageItem] = []
+        for dataset, frequency in self.RESEARCH_FREQUENCIES.items():
+            expected = expected_by_frequency[frequency]
+            existing = self.curated_store.partition_dates(
+                dataset,
+                self.provider.name,
+                start_date,
+                end_date,
+            )
+            missing = tuple(sorted(expected - existing))
+            items.append(
+                CoverageItem(
+                    dataset=dataset,
+                    frequency=frequency,
+                    expected_dates=len(expected),
+                    existing_dates=len(expected & existing),
+                    missing_dates=missing,
+                )
+            )
+        return CoverageResult(start_date, end_date, tuple(items))
 
     def validate_existing(
         self, as_of_date: date, datasets: list[Dataset]

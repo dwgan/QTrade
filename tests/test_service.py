@@ -311,6 +311,28 @@ def test_financial_periods_include_configured_history() -> None:
     )
 
 
+def test_research_coverage_distinguishes_daily_and_month_end(
+    tmp_path: Path,
+) -> None:
+    service = make_service(tmp_path, BackfillProvider())
+    service.backfill(
+        date(2026, 7, 23),
+        date(2026, 7, 25),
+        [Dataset.ADJUST_FACTORS],
+    )
+
+    result = service.research_coverage(
+        date(2026, 7, 23),
+        date(2026, 7, 25),
+    )
+    by_dataset = {item.dataset: item for item in result.items}
+    assert by_dataset[Dataset.ADJUST_FACTORS].complete
+    assert by_dataset[Dataset.ADJUST_FACTORS].expected_dates == 2
+    assert by_dataset[Dataset.DAILY_BASIC].expected_dates == 1
+    assert by_dataset[Dataset.DAILY_BASIC].missing_dates == (date(2026, 7, 24),)
+    assert not result.complete
+
+
 def test_manifest_merges_multiple_updates_for_same_date(tmp_path: Path) -> None:
     service = make_service(tmp_path)
     service.update(date(2026, 7, 24), [Dataset.ADJUST_FACTORS])

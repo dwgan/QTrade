@@ -71,6 +71,29 @@ class ParquetDatasetStore:
     def exists(self, dataset: Dataset, provider: str, as_of_date: date) -> bool:
         return self.data_path(dataset, provider, as_of_date).exists()
 
+    def partition_dates(
+        self,
+        dataset: Dataset,
+        provider: str,
+        start_date: date,
+        end_date: date,
+    ) -> set[date]:
+        provider_dir = self.root / dataset.value / f"provider={provider}"
+        if not provider_dir.exists():
+            return set()
+        dates: set[date] = set()
+        for partition in provider_dir.glob("as_of_date=*"):
+            try:
+                partition_date = date.fromisoformat(partition.name.split("=", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            if (
+                start_date <= partition_date <= end_date
+                and (partition / "data.parquet").exists()
+            ):
+                dates.add(partition_date)
+        return dates
+
     def read_range(
         self,
         dataset: Dataset,
@@ -82,15 +105,11 @@ class ParquetDatasetStore:
         if not provider_dir.exists():
             raise FileNotFoundError(f"Dataset directory not found: {provider_dir}")
 
-        paths: list[Path] = []
-        for partition in provider_dir.glob("as_of_date=*"):
-            try:
-                partition_date = date.fromisoformat(partition.name.split("=", 1)[1])
-            except (IndexError, ValueError):
-                continue
-            data_path = partition / "data.parquet"
-            if start_date <= partition_date <= end_date and data_path.exists():
-                paths.append(data_path)
+        dates = self.partition_dates(dataset, provider, start_date, end_date)
+        paths = [
+            self.data_path(dataset, provider, partition_date)
+            for partition_date in dates
+        ]
 
         if not paths:
             raise FileNotFoundError(

@@ -246,6 +246,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=12,
         help="Number of financial quarters before the research start (default: 12)",
     )
+    coverage = data_commands.add_parser(
+        "coverage",
+        help="Check local point-in-time research data coverage without downloading",
+    )
+    coverage.add_argument("--start", required=True, type=parse_date)
+    coverage.add_argument("--end", required=True, type=parse_date)
 
     data_commands.add_parser("datasets", help="List supported datasets")
 
@@ -878,6 +884,22 @@ def run(args: argparse.Namespace) -> int:
                     )
                     return 1
             return 0
+        if args.data_command == "coverage":
+            result = service.research_coverage(args.start, args.end)
+            for item in result.items:
+                first_missing = (
+                    item.missing_dates[0].isoformat()
+                    if item.missing_dates
+                    else "-"
+                )
+                print(
+                    f"{item.dataset.value}: {item.existing_dates}/"
+                    f"{item.expected_dates} ({item.frequency}); "
+                    f"missing: {len(item.missing_dates)}; "
+                    f"first missing: {first_missing}"
+                )
+            print(f"Research data complete: {result.complete}")
+            return 0 if result.complete else 1
 
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

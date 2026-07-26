@@ -248,6 +248,22 @@ def test_research_backfill_command_parses() -> None:
     assert args.lookback_quarters == 12
 
 
+def test_research_coverage_command_parses() -> None:
+    args = build_parser().parse_args(
+        [
+            "data",
+            "coverage",
+            "--start",
+            "2015-01-01",
+            "--end",
+            "2026-07-24",
+        ]
+    )
+
+    assert args.data_command == "coverage"
+    assert args.start == date(2015, 1, 1)
+
+
 def test_invalid_financial_period_is_rejected_before_provider_setup() -> None:
     assert (
         main(
