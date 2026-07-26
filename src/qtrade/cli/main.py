@@ -9,7 +9,7 @@ from pathlib import Path
 from qtrade.config import AppConfig, load_config
 from qtrade.dashboard.builder import DashboardBuilder
 from qtrade.data.providers.tushare import TushareProvider
-from qtrade.data.service import DataIngestionService
+from qtrade.data.service import DataIngestionService, StoredDataValidationService
 from qtrade.data.storage import ParquetDatasetStore
 from qtrade.data.validation import DataValidator
 from qtrade.domain import Dataset
@@ -48,6 +48,16 @@ def build_service(config: AppConfig) -> DataIngestionService:
         curated_store=ParquetDatasetStore(config.paths.curated, "curated"),
         validator=DataValidator(config.validation),
         snapshots_root=config.paths.snapshots,
+        reports_root=config.paths.reports,
+    )
+
+
+def build_validation_service(config: AppConfig) -> StoredDataValidationService:
+    config.paths.create()
+    return StoredDataValidationService(
+        curated_store=ParquetDatasetStore(config.paths.curated, "curated"),
+        validator=DataValidator(config.validation),
+        provider=config.provider.name,
         reports_root=config.paths.reports,
     )
 
@@ -399,6 +409,14 @@ def run(args: argparse.Namespace) -> int:
             return 2
 
     try:
+        if args.data_command == "validate":
+            reports = build_validation_service(config).validate(args.date, datasets)
+            _print_validation(reports)
+            passed = all(report.passed for report in reports)
+            if config.validation.fail_on_warning:
+                passed = passed and all(not report.issues for report in reports)
+            return 0 if passed else 1
+
         service = build_service(config)
         if args.data_command == "update":
             result = service.update(args.date, datasets)
@@ -423,12 +441,6 @@ def run(args: argparse.Namespace) -> int:
             _print_update(result)
             return 0 if result.succeeded else 1
 
-        reports = service.validate_existing(args.date, datasets)
-        _print_validation(reports)
-        passed = all(report.passed for report in reports)
-        if config.validation.fail_on_warning:
-            passed = passed and all(not report.issues for report in reports)
-        return 0 if passed else 1
     except (FileNotFoundError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

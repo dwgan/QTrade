@@ -47,6 +47,23 @@ class FactorDataClient:
         )
 
 
+class StockLimitClient:
+    def stk_limit(self, **kwargs):
+        assert kwargs == {
+            "trade_date": "20260724",
+            "fields": "ts_code,trade_date,pre_close,up_limit,down_limit",
+        }
+        return pd.DataFrame(
+            {
+                "ts_code": ["000001.SZ"],
+                "trade_date": ["20260724"],
+                "pre_close": [10.0],
+                "up_limit": [11.0],
+                "down_limit": [9.0],
+            }
+        )
+
+
 def test_tushare_daily_adapter_converts_to_polars() -> None:
     provider = TushareProvider(
         ProviderConfig(request_pause_seconds=0),
@@ -80,3 +97,61 @@ def test_tushare_factor_data_adapters() -> None:
     assert basic.frame.height == 1
     assert financials.frame.height == 2
     assert financials.request["periods"] == ["20251231", "20260331"]
+
+
+def test_tushare_stock_limit_requests_required_fields() -> None:
+    provider = TushareProvider(
+        ProviderConfig(request_pause_seconds=0),
+        MarketConfig(),
+        client=StockLimitClient(),
+    )
+
+    batch = provider.fetch(
+        Dataset.STOCK_LIMIT,
+        FetchRequest(as_of_date=date(2026, 7, 24)),
+    )
+
+    assert batch.frame.columns == [
+        "ts_code",
+        "trade_date",
+        "pre_close",
+        "up_limit",
+        "down_limit",
+    ]
+
+
+def test_tushare_client_uses_optional_api_gateway(monkeypatch) -> None:
+    import tushare as ts
+
+    client = object()
+    wrapper = type("Client", (), {})()
+    monkeypatch.setattr(ts, "pro_api", lambda token: wrapper if token == "test-token" else client)
+    monkeypatch.setenv("TEST_TOKEN", "test-token")
+    monkeypatch.setenv("TEST_API_URL", "https://example.test/api")
+
+    provider = TushareProvider(
+        ProviderConfig(
+            token_env="TEST_TOKEN",
+            api_url_env="TEST_API_URL",
+            request_pause_seconds=0,
+        ),
+        MarketConfig(),
+    )
+
+    assert provider._client._DataApi__http_url == "https://example.test/api"
+
+
+def test_tushare_conversion_normalizes_nan_in_mixed_columns() -> None:
+    source = pd.DataFrame(
+        {
+            "end_date": [float("nan"), "20260712"],
+            "change_reason": ["renamed", float("nan")],
+            "numeric": [1.5, float("nan")],
+        }
+    )
+
+    frame = TushareProvider._to_polars(source)
+
+    assert frame.get_column("end_date").to_list() == [None, "20260712"]
+    assert frame.get_column("change_reason").to_list() == ["renamed", None]
+    assert frame.get_column("numeric").to_list() == [1.5, None]

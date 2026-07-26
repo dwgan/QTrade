@@ -95,6 +95,17 @@ class FinancialProvider:
         )
 
 
+class InvalidFinancialProvider(FinancialProvider):
+    def fetch(self, dataset: Dataset, request: FetchRequest) -> DataBatch:
+        batch = super().fetch(dataset, request)
+        return DataBatch(
+            dataset=batch.dataset,
+            provider=batch.provider,
+            as_of_date=batch.as_of_date,
+            frame=batch.frame.with_columns(pl.lit(None).cast(pl.String).alias("ts_code")),
+        )
+
+
 def make_service(tmp_path: Path, provider=None) -> DataIngestionService:
     return DataIngestionService(
         provider=provider or FakeProvider(),
@@ -122,6 +133,7 @@ def test_ingestion_writes_raw_curated_manifest_and_report(tmp_path: Path) -> Non
         (tmp_path / "snapshots/2026-07-24/manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["succeeded"] is True
+    assert manifest["datasets"][0]["validation_passed"] is True
     assert (tmp_path / "reports/data-quality/2026-07-24/report.md").exists()
 
 
@@ -183,3 +195,20 @@ def test_manifest_merges_multiple_updates_for_same_date(tmp_path: Path) -> None:
         "adjust_factors",
         "financial_indicators",
     }
+
+
+def test_manifest_reports_validation_failure_for_completed_dataset(tmp_path: Path) -> None:
+    service = make_service(tmp_path, InvalidFinancialProvider())
+
+    result = service.update_financial_indicators(
+        date(2026, 7, 24), ("20251231", "20260331")
+    )
+
+    manifest = json.loads(
+        (tmp_path / "snapshots/2026-07-24/manifest.json").read_text(encoding="utf-8")
+    )
+    financials = manifest["datasets"][0]
+    assert not result.succeeded
+    assert financials["status"] == "completed"
+    assert financials["validation_passed"] is False
+    assert manifest["succeeded"] is False

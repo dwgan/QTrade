@@ -14,6 +14,13 @@ def normalize_dataset(dataset: Dataset, frame: pl.DataFrame) -> pl.DataFrame:
     normalized = frame.rename({name: name.strip().lower() for name in frame.columns})
     schema = schema_for(dataset)
 
+    if dataset == Dataset.FINANCIAL_INDICATORS:
+        available_key = [
+            column for column in schema.primary_key if column in normalized.columns
+        ]
+        if len(available_key) == len(schema.primary_key):
+            normalized = normalized.drop_nulls(available_key)
+
     available_key = [column for column in schema.primary_key if column in normalized.columns]
     if available_key:
         normalized = normalized.unique(subset=available_key, keep="last", maintain_order=True)

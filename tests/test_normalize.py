@@ -23,3 +23,19 @@ def test_normalize_deduplicates_primary_key_and_keeps_last_row() -> None:
 
     assert result.height == 2
     assert result.filter(pl.col("ts_code") == "000001.SZ").get_column("close").item() == 10.3
+
+
+def test_normalize_financials_drops_rows_without_point_in_time_keys() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_code": ["000001.SZ", "000002.SZ"],
+            "ann_date": ["20260430", None],
+            "end_date": ["20260331", "20260331"],
+            "roe": [10.0, 11.0],
+        }
+    )
+
+    result = normalize_dataset(Dataset.FINANCIAL_INDICATORS, frame)
+
+    assert result.height == 1
+    assert result.get_column("ts_code").to_list() == ["000001.SZ"]

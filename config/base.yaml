@@ -12,7 +12,8 @@ paths:
 provider:
   name: tushare
   token_env: TUSHARE_TOKEN
-  request_pause_seconds: 0.2
+  api_url_env: TUSHARE_API_URL
+  request_pause_seconds: 0.45
   retry_attempts: 3
 
 market:

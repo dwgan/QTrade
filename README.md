@@ -23,6 +23,14 @@ python -m pip install -e ".[dev]"
 $env:TUSHARE_TOKEN = "your-token"
 ```
 
+如果使用兼容 Tushare SDK 的自定义 API 地址，可额外设置：
+
+```powershell
+$env:TUSHARE_API_URL = "https://your-compatible-endpoint.example/api"
+```
+
+未设置 `TUSHARE_API_URL` 时使用 Tushare SDK 的默认官方地址。
+
 真实 token 不应写入配置文件或提交到 Git。
 
 ## 快速开始

@@ -39,7 +39,10 @@ class TushareProvider:
             raise RuntimeError(
                 "Tushare is not installed. Install the project dependencies first."
             ) from exc
-        return ts.pro_api(self._config.token())
+        client = ts.pro_api(self._config.token())
+        if api_url := self._config.api_url():
+            client._DataApi__http_url = api_url
+        return client
 
     @staticmethod
     def _date(value: Any) -> str:
@@ -52,7 +55,13 @@ class TushareProvider:
         if isinstance(value, pl.DataFrame):
             return value
         if hasattr(value, "to_dict"):
-            return pl.DataFrame(value.to_dict(orient="list"))
+            if hasattr(value, "notna") and hasattr(value, "astype"):
+                value = value.astype(object).where(value.notna(), None)
+            return pl.DataFrame(
+                value.to_dict(orient="list"),
+                infer_schema_length=None,
+                strict=False,
+            )
         return pl.DataFrame(value)
 
     def _call(self, operation: Callable[..., Any], **kwargs: Any) -> pl.DataFrame:
@@ -171,7 +180,10 @@ class TushareProvider:
         return self._call(self._client.daily_basic, **params), params
 
     def _fetch_stock_limit(self, request: FetchRequest) -> tuple[pl.DataFrame, dict[str, Any]]:
-        params = {"trade_date": self._date(request.as_of_date)}
+        params = {
+            "trade_date": self._date(request.as_of_date),
+            "fields": "ts_code,trade_date,pre_close,up_limit,down_limit",
+        }
         return self._call(self._client.stk_limit, **params), params
 
     def _fetch_financial_indicators(

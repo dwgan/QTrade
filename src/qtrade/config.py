@@ -35,6 +35,7 @@ class PathConfig(BaseModel):
 class ProviderConfig(BaseModel):
     name: str = "tushare"
     token_env: str = "TUSHARE_TOKEN"
+    api_url_env: str = "TUSHARE_API_URL"
     request_pause_seconds: float = Field(default=0.2, ge=0)
     retry_attempts: int = Field(default=3, ge=1, le=10)
 
@@ -45,6 +46,9 @@ class ProviderConfig(BaseModel):
                 f"Missing provider credential: set environment variable {self.token_env}."
             )
         return value
+
+    def api_url(self) -> str | None:
+        return os.getenv(self.api_url_env, "").strip() or None
 
 
 class MarketConfig(BaseModel):

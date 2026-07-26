@@ -63,6 +63,32 @@ class BackfillResult:
         return not self.failed_dates
 
 
+class StoredDataValidationService:
+    def __init__(
+        self,
+        curated_store: ParquetDatasetStore,
+        validator: DataValidator,
+        provider: str,
+        reports_root: Path,
+    ) -> None:
+        self.curated_store = curated_store
+        self.validator = validator
+        self.provider = provider
+        self.reports_root = Path(reports_root)
+
+    def validate(
+        self,
+        as_of_date: date,
+        datasets: list[Dataset],
+    ) -> list[ValidationReport]:
+        reports: list[ValidationReport] = []
+        for dataset in datasets:
+            frame = self.curated_store.read(dataset, self.provider, as_of_date)
+            reports.append(self.validator.validate(dataset, as_of_date, frame))
+        write_validation_reports(self.reports_root, as_of_date, reports)
+        return reports
+
+
 class DataIngestionService:
     def __init__(
         self,
@@ -266,12 +292,12 @@ class DataIngestionService:
     def validate_existing(
         self, as_of_date: date, datasets: list[Dataset]
     ) -> list[ValidationReport]:
-        reports: list[ValidationReport] = []
-        for dataset in datasets:
-            frame = self.curated_store.read(dataset, self.provider.name, as_of_date)
-            reports.append(self.validator.validate(dataset, as_of_date, frame))
-        write_validation_reports(self.reports_root, as_of_date, reports)
-        return reports
+        return StoredDataValidationService(
+            self.curated_store,
+            self.validator,
+            self.provider.name,
+            self.reports_root,
+        ).validate(as_of_date, datasets)
 
     def _write_manifest(self, result: UpdateResult) -> Path:
         directory = self.snapshots_root / result.as_of_date.isoformat()
@@ -285,10 +311,16 @@ class DataIngestionService:
                 existing_datasets = {item["dataset"]: item for item in existing.get("datasets", [])}
             except (json.JSONDecodeError, KeyError, TypeError):
                 existing_datasets = {}
+        reports_by_dataset = {report.dataset: report for report in result.reports}
         current_datasets = {
             item.dataset.value: {
                 "dataset": item.dataset.value,
                 "status": item.status,
+                "validation_passed": (
+                    reports_by_dataset[item.dataset].passed
+                    if item.dataset in reports_by_dataset
+                    else None
+                ),
                 "row_count": item.row_count,
                 "raw_path": item.raw_path,
                 "curated_path": item.curated_path,
@@ -302,7 +334,9 @@ class DataIngestionService:
             "provider": self.provider.name,
             "created_at": datetime.now().isoformat(),
             "succeeded": all(
-                item.get("status") == "completed" for item in merged_datasets.values()
+                item.get("status") == "completed"
+                and item.get("validation_passed", True) is not False
+                for item in merged_datasets.values()
             ),
             "datasets": [merged_datasets[name] for name in sorted(merged_datasets)],
         }
