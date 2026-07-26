@@ -241,3 +241,20 @@ def test_backfill_command_parses_default_datasets() -> None:
         Dataset.DAILY_BASIC,
         Dataset.STOCK_LIMIT,
     ]
+    assert args.frequency == "daily"
+
+
+def test_bulk_index_backfill_command_parses() -> None:
+    args = build_parser().parse_args(
+        [
+            "data",
+            "index-backfill",
+            "--start",
+            "2015-01-01",
+            "--end",
+            "2026-07-24",
+        ]
+    )
+
+    assert args.data_command == "index-backfill"
+    assert args.start == date(2015, 1, 1)

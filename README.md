@@ -91,6 +91,27 @@ qtrade data backfill --start 2025-01-01 --end 2026-07-24
 
 回填命令先读取交易日历，只处理开市日期；已经完整落盘的日期会自动跳过，可以在中断后重跑。实际可获取的数据范围和调用频率取决于 Tushare 账户权限。
 
+多年研究数据建议分层回填：
+
+```powershell
+qtrade data backfill `
+  --start 2015-01-01 `
+  --end 2026-07-24 `
+  --datasets daily_prices,adjust_factors,stock_limit
+
+qtrade data index-backfill `
+  --start 2015-01-01 `
+  --end 2026-07-24
+
+qtrade data backfill `
+  --start 2015-01-01 `
+  --end 2026-07-24 `
+  --datasets daily_basic `
+  --frequency month_end
+```
+
+指数行情按指数整段抓取；月末策略的估值数据只抓取每月最后一个交易日。
+
 生成市场分析：
 
 ```powershell

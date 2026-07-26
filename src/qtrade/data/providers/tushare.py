@@ -144,13 +144,37 @@ class TushareProvider:
         return self._call(self._client.adj_factor, **params), params
 
     def _fetch_index_daily(self, request: FetchRequest) -> tuple[pl.DataFrame, dict[str, Any]]:
-        trade_date = self._date(request.as_of_date)
-        frames = [
-            self._call(self._client.index_daily, ts_code=code, trade_date=trade_date)
-            for code in self._market.index_codes
-        ]
+        if request.start_date is not None or request.end_date is not None:
+            params = {
+                "ts_code": self._market.index_codes,
+                "start_date": self._date(request.start_date or request.as_of_date),
+                "end_date": self._date(request.end_date or request.as_of_date),
+            }
+            frames = [
+                self._call(
+                    self._client.index_daily,
+                    ts_code=code,
+                    start_date=params["start_date"],
+                    end_date=params["end_date"],
+                )
+                for code in self._market.index_codes
+            ]
+        else:
+            trade_date = self._date(request.as_of_date)
+            params = {
+                "ts_code": self._market.index_codes,
+                "trade_date": trade_date,
+            }
+            frames = [
+                self._call(
+                    self._client.index_daily,
+                    ts_code=code,
+                    trade_date=trade_date,
+                )
+                for code in self._market.index_codes
+            ]
         frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
-        return frame, {"ts_code": self._market.index_codes, "trade_date": trade_date}
+        return frame, params
 
     def _fetch_index_members(self, request: FetchRequest) -> tuple[pl.DataFrame, dict[str, Any]]:
         start = request.start_date or request.as_of_date - timedelta(days=45)

@@ -106,6 +106,33 @@ class InvalidFinancialProvider(FinancialProvider):
         )
 
 
+class BulkIndexProvider:
+    name = "fake"
+
+    def fetch(self, dataset: Dataset, request: FetchRequest) -> DataBatch:
+        assert dataset == Dataset.INDEX_DAILY
+        assert request.start_date == date(2026, 7, 23)
+        assert request.end_date == date(2026, 7, 24)
+        return DataBatch(
+            dataset=dataset,
+            provider=self.name,
+            as_of_date=request.as_of_date,
+            frame=pl.DataFrame(
+                {
+                    "ts_code": ["000300.SH", "000300.SH"],
+                    "trade_date": ["20260723", "20260724"],
+                    "open": [100.0, 101.0],
+                    "high": [102.0, 103.0],
+                    "low": [99.0, 100.0],
+                    "close": [101.0, 102.0],
+                    "pre_close": [100.0, 101.0],
+                    "vol": [1000.0, 1100.0],
+                    "amount": [10000.0, 11000.0],
+                }
+            ),
+        )
+
+
 def make_service(tmp_path: Path, provider=None) -> DataIngestionService:
     return DataIngestionService(
         provider=provider or FakeProvider(),
@@ -171,6 +198,25 @@ def test_backfill_uses_open_dates_and_skips_existing_partitions(tmp_path: Path) 
     assert second.skipped_dates == 2
 
 
+def test_month_end_backfill_uses_only_last_open_date(tmp_path: Path) -> None:
+    service = make_service(tmp_path, BackfillProvider())
+
+    result = service.backfill(
+        date(2026, 7, 23),
+        date(2026, 7, 25),
+        [Dataset.ADJUST_FACTORS],
+        frequency="month_end",
+    )
+
+    assert result.trading_dates == 1
+    assert result.completed_dates == 1
+    assert service.curated_store.exists(
+        Dataset.ADJUST_FACTORS,
+        "fake",
+        date(2026, 7, 24),
+    )
+
+
 def test_financial_snapshot_update_persists_requested_periods(tmp_path: Path) -> None:
     service = make_service(tmp_path, FinancialProvider())
 
@@ -212,3 +258,21 @@ def test_manifest_reports_validation_failure_for_completed_dataset(tmp_path: Pat
     assert financials["status"] == "completed"
     assert financials["validation_passed"] is False
     assert manifest["succeeded"] is False
+
+
+def test_bulk_index_backfill_splits_range_into_daily_partitions(
+    tmp_path: Path,
+) -> None:
+    service = make_service(tmp_path, BulkIndexProvider())
+
+    result = service.backfill_index_daily(
+        date(2026, 7, 23),
+        date(2026, 7, 24),
+    )
+
+    assert result.completed_dates == 2
+    assert service.curated_store.exists(
+        Dataset.INDEX_DAILY,
+        "fake",
+        date(2026, 7, 23),
+    )

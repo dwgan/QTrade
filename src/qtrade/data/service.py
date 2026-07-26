@@ -189,9 +189,12 @@ class DataIngestionService:
         start_date: date,
         end_date: date,
         datasets: list[Dataset],
+        frequency: str = "daily",
     ) -> BackfillResult:
         if start_date > end_date:
             raise ValueError("Backfill start date must not be after end date.")
+        if frequency not in {"daily", "month_end"}:
+            raise ValueError("Backfill frequency must be daily or month_end.")
 
         calendar_batch = self.provider.fetch(
             Dataset.TRADE_CALENDAR,
@@ -232,6 +235,11 @@ class DataIngestionService:
             .get_column("cal_date")
             .to_list()
         )
+        if frequency == "month_end":
+            month_ends: dict[tuple[int, int], date] = {}
+            for trading_date in open_dates:
+                month_ends[(trading_date.year, trading_date.month)] = trading_date
+            open_dates = list(month_ends.values())
         daily_datasets = [dataset for dataset in datasets if dataset != Dataset.TRADE_CALENDAR]
         result = BackfillResult(start_date, end_date, trading_dates=len(open_dates))
         work: list[tuple[int, date, list[Dataset]]] = []
@@ -275,6 +283,59 @@ class DataIngestionService:
             else:
                 result.failed_dates.append(trading_date)
                 LOGGER.warning("Backfill failed for %s", trading_date)
+        return result
+
+    def backfill_index_daily(
+        self,
+        start_date: date,
+        end_date: date,
+    ) -> BackfillResult:
+        if start_date > end_date:
+            raise ValueError("Backfill start date must not be after end date.")
+        dataset = Dataset.INDEX_DAILY
+        raw_batch = self.provider.fetch(
+            dataset,
+            FetchRequest(
+                as_of_date=end_date,
+                start_date=start_date,
+                end_date=end_date,
+            ),
+        )
+        self.raw_store.write(raw_batch)
+        if "trade_date" not in raw_batch.frame.columns:
+            raise ValueError("Bulk index daily response is missing trade_date.")
+        prepared = raw_batch.frame.with_columns(
+            pl.col("trade_date")
+            .cast(pl.String)
+            .str.replace_all("-", "")
+            .str.strptime(pl.Date, "%Y%m%d", strict=False)
+            .alias("_partition_date")
+        ).drop_nulls("_partition_date")
+        dates = prepared.get_column("_partition_date").unique().sort().to_list()
+        result = BackfillResult(start_date, end_date, trading_dates=len(dates))
+        for partition_date in dates:
+            if self.curated_store.exists(dataset, self.provider.name, partition_date):
+                result.skipped_dates += 1
+                continue
+            frame = prepared.filter(
+                pl.col("_partition_date") == partition_date
+            ).drop("_partition_date")
+            curated = normalize_dataset(dataset, frame, partition_date)
+            report = self.validator.validate(dataset, partition_date, curated)
+            if not report.passed:
+                result.failed_dates.append(partition_date)
+                continue
+            self.curated_store.write(
+                DataBatch(
+                    dataset=dataset,
+                    provider=raw_batch.provider,
+                    as_of_date=partition_date,
+                    frame=curated,
+                    fetched_at=raw_batch.fetched_at,
+                    request={**raw_batch.request, "normalized": True, "bulk": True},
+                )
+            )
+            result.completed_dates += 1
         return result
 
     def update_financial_indicators(

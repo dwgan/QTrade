@@ -200,6 +200,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="daily_prices,adjust_factors,index_daily,daily_basic,stock_limit",
         help="Comma-separated daily dataset names",
     )
+    backfill.add_argument(
+        "--frequency",
+        choices=["daily", "month_end"],
+        default="daily",
+        help="Fetch every trading day or only each month's last trading day",
+    )
+    index_backfill = data_commands.add_parser(
+        "index-backfill",
+        help="Fetch configured index daily history in bulk",
+    )
+    index_backfill.add_argument("--start", required=True, type=parse_date)
+    index_backfill.add_argument("--end", required=True, type=parse_date)
 
     financials = data_commands.add_parser(
         "financials", help="Fetch full-market quarterly financial indicators"
@@ -733,7 +745,12 @@ def run(args: argparse.Namespace) -> int:
             _print_update(result)
             return 0 if result.succeeded else 1
         if args.data_command == "backfill":
-            result = service.backfill(args.start, args.end, datasets)
+            result = service.backfill(
+                args.start,
+                args.end,
+                datasets,
+                frequency=args.frequency,
+            )
             print(
                 f"Trading dates: {result.trading_dates}; completed: "
                 f"{result.completed_dates}; skipped: {result.skipped_dates}; "
@@ -745,6 +762,14 @@ def run(args: argparse.Namespace) -> int:
                     + ", ".join(value.isoformat() for value in result.failed_dates),
                     file=sys.stderr,
                 )
+            return 0 if result.succeeded else 1
+        if args.data_command == "index-backfill":
+            result = service.backfill_index_daily(args.start, args.end)
+            print(
+                f"Index dates: {result.trading_dates}; completed: "
+                f"{result.completed_dates}; skipped: {result.skipped_dates}; "
+                f"failed: {len(result.failed_dates)}"
+            )
             return 0 if result.succeeded else 1
         if args.data_command == "financials":
             result = service.update_financial_indicators(args.date, periods)
