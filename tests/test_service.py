@@ -67,6 +67,34 @@ class BackfillProvider:
         )
 
 
+class FinancialProvider:
+    name = "fake"
+
+    def fetch(self, dataset: Dataset, request: FetchRequest) -> DataBatch:
+        assert dataset == Dataset.FINANCIAL_INDICATORS
+        assert request.periods == ("20251231", "20260331")
+        return DataBatch(
+            dataset=dataset,
+            provider=self.name,
+            as_of_date=request.as_of_date,
+            frame=pl.DataFrame(
+                {
+                    "ts_code": ["000001.SZ"],
+                    "ann_date": ["20260430"],
+                    "end_date": ["20260331"],
+                    "roe": [10.0],
+                    "roe_dt": [9.0],
+                    "roic": [8.0],
+                    "grossprofit_margin": [30.0],
+                    "netprofit_margin": [15.0],
+                    "ocfps": [1.0],
+                    "eps": [0.8],
+                    "debt_to_assets": [40.0],
+                }
+            ),
+        )
+
+
 def make_service(tmp_path: Path, provider=None) -> DataIngestionService:
     return DataIngestionService(
         provider=provider or FakeProvider(),
@@ -129,3 +157,29 @@ def test_backfill_uses_open_dates_and_skips_existing_partitions(tmp_path: Path) 
     assert first.completed_dates == 2
     assert second.completed_dates == 0
     assert second.skipped_dates == 2
+
+
+def test_financial_snapshot_update_persists_requested_periods(tmp_path: Path) -> None:
+    service = make_service(tmp_path, FinancialProvider())
+
+    result = service.update_financial_indicators(date(2026, 7, 24), ("20251231", "20260331"))
+
+    assert result.succeeded
+    stored = service.curated_store.read(Dataset.FINANCIAL_INDICATORS, "fake", date(2026, 7, 24))
+    assert stored.height == 1
+
+
+def test_manifest_merges_multiple_updates_for_same_date(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    service.update(date(2026, 7, 24), [Dataset.ADJUST_FACTORS])
+    service.provider = FinancialProvider()
+
+    service.update_financial_indicators(date(2026, 7, 24), ("20251231", "20260331"))
+
+    manifest = json.loads(
+        (tmp_path / "snapshots/2026-07-24/manifest.json").read_text(encoding="utf-8")
+    )
+    assert {item["dataset"] for item in manifest["datasets"]} == {
+        "adjust_factors",
+        "financial_indicators",
+    }

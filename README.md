@@ -76,6 +76,22 @@ qtrade analyze industry --date 2026-07-24
 
 行业分析结果写入 `reports/industry/YYYY-MM-DD`。
 
+准备多因子选股需要的季度财务快照：
+
+```powershell
+qtrade data financials `
+  --date 2026-07-24 `
+  --periods 20250331,20250630,20250930,20251231,20260331
+
+qtrade data update `
+  --date 2026-07-24 `
+  --datasets security_master,daily_basic,stock_limit
+
+qtrade analyze factors --date 2026-07-24
+```
+
+全市场季度财务命令使用 Tushare `fina_indicator_vip`，需要相应积分权限。分析结果写入 `reports/factors/YYYY-MM-DD`，包括候选报告和完整排名 Parquet。
+
 ## 数据位置
 
 默认配置位于 `config/base.yaml`：

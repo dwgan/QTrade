@@ -93,6 +93,39 @@ class IndustryConfig(BaseModel):
     )
 
 
+class FactorConfig(BaseModel):
+    history_calendar_days: int = Field(default=500, ge=250)
+    minimum_history_days: int = Field(default=121, ge=121)
+    minimum_listing_days: int = Field(default=365, ge=0)
+    liquidity_exclusion_percentile: float = Field(default=0.20, ge=0, lt=0.5)
+    candidate_count: int = Field(default=30, ge=1)
+    max_candidates_per_industry: int = Field(default=5, ge=1)
+    exclude_industry_keywords: list[str] = Field(
+        default_factory=lambda: ["银行", "保险", "证券", "多元金融"]
+    )
+    weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "quality": 0.35,
+            "momentum": 0.30,
+            "value": 0.20,
+            "low_risk": 0.15,
+        }
+    )
+
+    @field_validator("weights")
+    @classmethod
+    def valid_weights(cls, value: dict[str, float]) -> dict[str, float]:
+        required = {"quality", "momentum", "value", "low_risk"}
+        if set(value) != required:
+            raise ValueError(f"Factor weights must contain exactly: {sorted(required)}")
+        if any(weight < 0 for weight in value.values()):
+            raise ValueError("Factor weights must be non-negative.")
+        total = sum(value.values())
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError("Factor weights must sum to 1.")
+        return value
+
+
 class ValidationConfig(BaseModel):
     minimum_daily_rows: int = Field(default=100, ge=0)
     fail_on_warning: bool = False
@@ -104,6 +137,7 @@ class AppConfig(BaseModel):
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     market: MarketConfig = Field(default_factory=MarketConfig)
     industry: IndustryConfig = Field(default_factory=IndustryConfig)
+    factors: FactorConfig = Field(default_factory=FactorConfig)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     project_root: Path = Field(default=Path.cwd(), exclude=True)

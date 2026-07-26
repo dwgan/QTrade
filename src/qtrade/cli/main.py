@@ -12,6 +12,7 @@ from qtrade.data.service import DataIngestionService
 from qtrade.data.storage import ParquetDatasetStore
 from qtrade.data.validation import DataValidator
 from qtrade.domain import Dataset
+from qtrade.factors.service import FactorAnalysisService
 from qtrade.industry.service import IndustryAnalysisService
 from qtrade.market.service import MarketAnalysisService
 
@@ -68,6 +69,16 @@ def build_industry_service(config: AppConfig) -> IndustryAnalysisService:
     )
 
 
+def build_factor_service(config: AppConfig) -> FactorAnalysisService:
+    config.paths.create()
+    return FactorAnalysisService(
+        config=config.factors,
+        curated_store=ParquetDatasetStore(config.paths.curated, "curated"),
+        provider=config.provider.name,
+        reports_root=config.paths.reports,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qtrade", description="QTrade research toolkit")
     parser.add_argument("--config", default="config/base.yaml", help="YAML configuration path")
@@ -92,8 +103,18 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--end", required=True, type=parse_date)
     backfill.add_argument(
         "--datasets",
-        default="daily_prices,adjust_factors,index_daily",
+        default="daily_prices,adjust_factors,index_daily,daily_basic",
         help="Comma-separated daily dataset names",
+    )
+
+    financials = data_commands.add_parser(
+        "financials", help="Fetch full-market quarterly financial indicators"
+    )
+    financials.add_argument("--date", required=True, type=parse_date)
+    financials.add_argument(
+        "--periods",
+        required=True,
+        help="Comma-separated quarter-end dates in YYYYMMDD format",
     )
 
     data_commands.add_parser("datasets", help="List supported datasets")
@@ -106,6 +127,8 @@ def build_parser() -> argparse.ArgumentParser:
         "industry", help="Generate daily industry and style analysis"
     )
     industry.add_argument("--date", required=True, type=parse_date)
+    factors = analyze_commands.add_parser("factors", help="Generate multi-factor stock candidates")
+    factors.add_argument("--date", required=True, type=parse_date)
     return parser
 
 
@@ -141,7 +164,7 @@ def run(args: argparse.Namespace) -> int:
                 temperature = analysis.temperature if analysis.temperature is not None else "N/A"
                 print(f"Market state: {analysis.state.value}; temperature: {temperature}")
                 succeeded = analysis.temperature is not None
-            else:
+            elif args.analyze_command == "industry":
                 result = build_industry_service(config).run(args.date)
                 analysis = result.analysis
                 print(
@@ -149,6 +172,15 @@ def run(args: argparse.Namespace) -> int:
                     f"confidence: {analysis.data_confidence}"
                 )
                 succeeded = bool(analysis.industries)
+            else:
+                result = build_factor_service(config).run(args.date)
+                analysis = result.analysis
+                print(
+                    f"Candidates: {len(analysis.candidates)}; "
+                    f"eligible: {analysis.eligible_size}; "
+                    f"confidence: {analysis.data_confidence}"
+                )
+                succeeded = bool(analysis.candidates)
             print(f"Report: {result.markdown_path}")
             return 0 if succeeded else 1
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
@@ -156,10 +188,17 @@ def run(args: argparse.Namespace) -> int:
             return 1
 
     try:
-        datasets = parse_datasets(args.datasets, config.update.datasets)
+        datasets = parse_datasets(getattr(args, "datasets", None), config.update.datasets)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    periods: tuple[str, ...] = ()
+    if args.data_command == "financials":
+        periods = tuple(value.strip() for value in args.periods.split(",") if value.strip())
+        if not periods or any(len(value) != 8 or not value.isdigit() for value in periods):
+            print("Periods must be comma-separated YYYYMMDD values.", file=sys.stderr)
+            return 2
 
     try:
         service = build_service(config)
@@ -180,6 +219,10 @@ def run(args: argparse.Namespace) -> int:
                     + ", ".join(value.isoformat() for value in result.failed_dates),
                     file=sys.stderr,
                 )
+            return 0 if result.succeeded else 1
+        if args.data_command == "financials":
+            result = service.update_financial_indicators(args.date, periods)
+            _print_update(result)
             return 0 if result.succeeded else 1
 
         reports = service.validate_existing(args.date, datasets)

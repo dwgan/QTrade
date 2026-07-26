@@ -79,6 +79,44 @@ SCHEMAS: dict[Dataset, DatasetSchema] = {
         primary_key=("index_code", "con_code", "trade_date"),
         sort_columns=("trade_date", "index_code", "con_code"),
     ),
+    Dataset.DAILY_BASIC: DatasetSchema(
+        required_columns=(
+            "ts_code",
+            "trade_date",
+            "close",
+            "turnover_rate",
+            "pe_ttm",
+            "pb",
+            "ps_ttm",
+            "dv_ttm",
+            "total_mv",
+            "circ_mv",
+        ),
+        primary_key=("ts_code", "trade_date"),
+        sort_columns=("trade_date", "ts_code"),
+    ),
+    Dataset.STOCK_LIMIT: DatasetSchema(
+        required_columns=("ts_code", "trade_date", "pre_close", "up_limit", "down_limit"),
+        primary_key=("ts_code", "trade_date"),
+        sort_columns=("trade_date", "ts_code"),
+    ),
+    Dataset.FINANCIAL_INDICATORS: DatasetSchema(
+        required_columns=(
+            "ts_code",
+            "ann_date",
+            "end_date",
+            "roe",
+            "roe_dt",
+            "roic",
+            "grossprofit_margin",
+            "netprofit_margin",
+            "ocfps",
+            "eps",
+            "debt_to_assets",
+        ),
+        primary_key=("ts_code", "ann_date", "end_date"),
+        sort_columns=("ann_date", "ts_code", "end_date"),
+    ),
 }
 
 

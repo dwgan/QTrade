@@ -16,6 +16,9 @@ class Dataset(StrEnum):
     ADJUST_FACTORS = "adjust_factors"
     INDEX_DAILY = "index_daily"
     INDEX_MEMBERS = "index_members"
+    DAILY_BASIC = "daily_basic"
+    STOCK_LIMIT = "stock_limit"
+    FINANCIAL_INDICATORS = "financial_indicators"
 
 
 class Severity(StrEnum):
@@ -29,6 +32,7 @@ class FetchRequest:
     as_of_date: date
     start_date: date | None = None
     end_date: date | None = None
+    periods: tuple[str, ...] = ()
 
 
 @dataclass

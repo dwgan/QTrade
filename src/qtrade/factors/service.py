@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, timedelta
+from pathlib import Path
+
+from qtrade.config import FactorConfig
+from qtrade.data.storage import ParquetDatasetStore
+from qtrade.domain import Dataset
+from qtrade.factors.analyzer import FactorAnalyzer
+from qtrade.factors.models import FactorAnalysis
+from qtrade.factors.reporting import FactorReportWriter
+
+
+@dataclass(frozen=True)
+class FactorAnalysisResult:
+    analysis: FactorAnalysis
+    json_path: Path
+    markdown_path: Path
+    rankings_path: Path
+
+
+class FactorAnalysisService:
+    def __init__(
+        self,
+        config: FactorConfig,
+        curated_store: ParquetDatasetStore,
+        provider: str,
+        reports_root: Path,
+    ) -> None:
+        self.config = config
+        self.curated_store = curated_store
+        self.provider = provider
+        self.analyzer = FactorAnalyzer(config)
+        self.reporter = FactorReportWriter(reports_root)
+
+    def run(self, as_of_date: date) -> FactorAnalysisResult:
+        start_date = as_of_date - timedelta(days=self.config.history_calendar_days)
+        prices = self.curated_store.read_range(
+            Dataset.DAILY_PRICES, self.provider, start_date, as_of_date
+        )
+        adjustments = self.curated_store.read_range(
+            Dataset.ADJUST_FACTORS, self.provider, start_date, as_of_date
+        )
+        basic_date, daily_basic = self.curated_store.read_latest_on_or_before(
+            Dataset.DAILY_BASIC, self.provider, as_of_date
+        )
+        financial_date, financials = self.curated_store.read_latest_on_or_before(
+            Dataset.FINANCIAL_INDICATORS, self.provider, as_of_date
+        )
+        master_date, master = self.curated_store.read_latest_on_or_before(
+            Dataset.SECURITY_MASTER, self.provider, as_of_date
+        )
+        stock_limits = None
+        try:
+            limit_date, limit_frame = self.curated_store.read_latest_on_or_before(
+                Dataset.STOCK_LIMIT, self.provider, as_of_date
+            )
+            if limit_date == as_of_date:
+                stock_limits = limit_frame
+        except FileNotFoundError:
+            pass
+
+        computation = self.analyzer.analyze(
+            as_of_date,
+            prices,
+            adjustments,
+            daily_basic,
+            financials,
+            master,
+            stock_limits,
+            basic_date,
+            financial_date,
+            master_date,
+        )
+        json_path, markdown_path, rankings_path = self.reporter.write(computation)
+        return FactorAnalysisResult(
+            computation.analysis,
+            json_path,
+            markdown_path,
+            rankings_path,
+        )

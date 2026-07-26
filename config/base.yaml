@@ -42,6 +42,24 @@ industry:
       - 000852.SH
       - 000300.SH
 
+factors:
+  history_calendar_days: 500
+  minimum_history_days: 121
+  minimum_listing_days: 365
+  liquidity_exclusion_percentile: 0.20
+  candidate_count: 30
+  max_candidates_per_industry: 5
+  exclude_industry_keywords:
+    - 银行
+    - 保险
+    - 证券
+    - 多元金融
+  weights:
+    quality: 0.35
+    momentum: 0.30
+    value: 0.20
+    low_risk: 0.15
+
 update:
   datasets:
     - trade_calendar
@@ -51,6 +69,8 @@ update:
     - adjust_factors
     - index_daily
     - index_members
+    - daily_basic
+    - stock_limit
 
 validation:
   minimum_daily_rows: 100

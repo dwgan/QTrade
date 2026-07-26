@@ -75,6 +75,8 @@ class DataValidator:
         if dataset in {Dataset.DAILY_PRICES, Dataset.INDEX_DAILY}:
             self._validate_ohlc(frame, report)
             self._validate_trade_date(frame, as_of_date, report)
+        elif dataset in {Dataset.DAILY_BASIC, Dataset.STOCK_LIMIT}:
+            self._validate_trade_date(frame, as_of_date, report)
         elif dataset == Dataset.ADJUST_FACTORS:
             adjustment = pl.col("adj_factor").cast(pl.Float64, strict=False)
             invalid = frame.filter(adjustment.is_null() | (adjustment <= 0)).height
@@ -89,7 +91,9 @@ class DataValidator:
                 )
             self._validate_trade_date(frame, as_of_date, report)
 
-        if dataset == Dataset.DAILY_PRICES and frame.height < self.config.minimum_daily_rows:
+        if dataset in {Dataset.DAILY_PRICES, Dataset.DAILY_BASIC} and frame.height < (
+            self.config.minimum_daily_rows
+        ):
             report.issues.append(
                 ValidationIssue(
                     Severity.WARNING,

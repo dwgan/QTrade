@@ -81,6 +81,9 @@ class TushareProvider:
             Dataset.ADJUST_FACTORS: self._fetch_adjust_factors,
             Dataset.INDEX_DAILY: self._fetch_index_daily,
             Dataset.INDEX_MEMBERS: self._fetch_index_members,
+            Dataset.DAILY_BASIC: self._fetch_daily_basic,
+            Dataset.STOCK_LIMIT: self._fetch_stock_limit,
+            Dataset.FINANCIAL_INDICATORS: self._fetch_financial_indicators,
         }[dataset]
         frame, params = fetcher(request)
         return DataBatch(
@@ -157,3 +160,38 @@ class TushareProvider:
         ]
         frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
         return frame, params
+
+    def _fetch_daily_basic(self, request: FetchRequest) -> tuple[pl.DataFrame, dict[str, Any]]:
+        fields = (
+            "ts_code,trade_date,close,turnover_rate,turnover_rate_f,volume_ratio,"
+            "pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,"
+            "free_share,total_mv,circ_mv"
+        )
+        params = {"trade_date": self._date(request.as_of_date), "fields": fields}
+        return self._call(self._client.daily_basic, **params), params
+
+    def _fetch_stock_limit(self, request: FetchRequest) -> tuple[pl.DataFrame, dict[str, Any]]:
+        params = {"trade_date": self._date(request.as_of_date)}
+        return self._call(self._client.stk_limit, **params), params
+
+    def _fetch_financial_indicators(
+        self, request: FetchRequest
+    ) -> tuple[pl.DataFrame, dict[str, Any]]:
+        if not request.periods:
+            raise ValueError("Financial indicator fetch requires at least one report period.")
+        fields = (
+            "ts_code,ann_date,end_date,eps,ocfps,roe,roe_dt,roa,roic,"
+            "grossprofit_margin,netprofit_margin,debt_to_assets,current_ratio,"
+            "q_sales_yoy,q_netprofit_yoy,dt_netprofit_yoy,or_yoy,ocf_yoy,"
+            "update_flag"
+        )
+        frames = [
+            self._call(
+                self._client.fina_indicator_vip,
+                period=period,
+                fields=fields,
+            )
+            for period in request.periods
+        ]
+        frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+        return frame, {"periods": list(request.periods), "fields": fields}
