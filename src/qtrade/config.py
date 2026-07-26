@@ -153,6 +153,18 @@ class BacktestConfig(BaseModel):
         return list(dict.fromkeys(value))
 
 
+class ObservationConfig(BaseModel):
+    watchlist_symbols: list[str] = Field(default_factory=list)
+    candidate_count: int = Field(default=20, ge=1)
+    rank_mover_count: int = Field(default=10, ge=1)
+    shadow_lookback_calendar_days: int = Field(default=365, ge=30)
+
+    @field_validator("watchlist_symbols")
+    @classmethod
+    def normalized_watchlist(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip().upper() for item in value if item.strip()))
+
+
 class ValidationConfig(BaseModel):
     minimum_daily_rows: int = Field(default=100, ge=0)
     fail_on_warning: bool = False
@@ -167,6 +179,7 @@ class AppConfig(BaseModel):
     factors: FactorConfig = Field(default_factory=FactorConfig)
     research: ResearchConfig = Field(default_factory=ResearchConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
+    observation: ObservationConfig = Field(default_factory=ObservationConfig)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     project_root: Path = Field(default=Path.cwd(), exclude=True)

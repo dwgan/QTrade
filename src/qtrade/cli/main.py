@@ -15,6 +15,7 @@ from qtrade.domain import Dataset
 from qtrade.factors.service import FactorAnalysisService
 from qtrade.industry.service import IndustryAnalysisService
 from qtrade.market.service import MarketAnalysisService
+from qtrade.observation.service import ObservationService
 from qtrade.research.service import ResearchService
 
 
@@ -84,6 +85,17 @@ def build_research_service(config: AppConfig) -> ResearchService:
     config.paths.create()
     return ResearchService(
         research_config=config.research,
+        backtest_config=config.backtest,
+        curated_store=ParquetDatasetStore(config.paths.curated, "curated"),
+        provider=config.provider.name,
+        reports_root=config.paths.reports,
+    )
+
+
+def build_observation_service(config: AppConfig) -> ObservationService:
+    config.paths.create()
+    return ObservationService(
+        observation_config=config.observation,
         backtest_config=config.backtest,
         curated_store=ParquetDatasetStore(config.paths.curated, "curated"),
         provider=config.provider.name,
@@ -164,6 +176,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_date,
         help="First out-of-sample date; defaults to configured split ratio",
     )
+
+    observe = commands.add_parser("observe", help="Daily research observation")
+    observe_commands = observe.add_subparsers(dest="observe_command", required=True)
+    daily_observation = observe_commands.add_parser(
+        "daily", help="Generate candidate, watchlist, and shadow portfolio report"
+    )
+    daily_observation.add_argument("--date", required=True, type=parse_date)
     return parser
 
 
@@ -191,6 +210,29 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     config = load_config(Path(args.config))
+    if args.command == "observe":
+        try:
+            result = build_observation_service(config).run(args.date)
+            observation = result.observation
+            shadow = observation.shadow_portfolio
+            print(
+                f"Candidate changes: +{len(observation.entered_candidates)} "
+                f"-{len(observation.exited_candidates)}; "
+                f"watchlist: {len(observation.watchlist)}; "
+                f"shadow equity: {shadow.equity:.2f}"
+                if shadow is not None
+                else (
+                    f"Candidate changes: +{len(observation.entered_candidates)} "
+                    f"-{len(observation.exited_candidates)}; "
+                    f"watchlist: {len(observation.watchlist)}; shadow unavailable"
+                )
+            )
+            print(f"Report: {result.markdown_path}")
+            return 0
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
     if args.command in {"research", "backtest"}:
         try:
             if args.command == "research":

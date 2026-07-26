@@ -107,6 +107,15 @@ qtrade backtest candidates `
 成交限制和稳健性口径见
 [回测成交约束与稳健性](./docs/11-回测成交约束与稳健性.md)。
 
+在 `observation.watchlist_symbols` 配置自选股后，可生成候选变化、自选股和影子组合日报：
+
+```powershell
+qtrade observe daily --date 2026-07-24
+```
+
+结果写入 `reports/observations/YYYY-MM-DD`，详细说明见
+[每日观察与影子组合](./docs/12-每日观察与影子组合.md)。
+
 ## 数据位置
 
 默认配置位于 `config/base.yaml`：

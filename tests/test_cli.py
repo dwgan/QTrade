@@ -65,6 +65,13 @@ def test_candidate_backtest_command_parses() -> None:
     assert args.split_date == date(2025, 9, 1)
 
 
+def test_daily_observation_command_parses() -> None:
+    args = build_parser().parse_args(["observe", "daily", "--date", "2026-07-24"])
+
+    assert args.observe_command == "daily"
+    assert args.date == date(2026, 7, 24)
+
+
 def test_financial_snapshot_command_parses() -> None:
     args = build_parser().parse_args(
         [

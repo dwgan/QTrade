@@ -358,6 +358,7 @@ class CandidateBacktester:
                             else "completed"
                         ),
                         "holdings": len(holdings),
+                        "holding_codes": sorted(holdings),
                         "turnover": turnover,
                         "transaction_cost": transaction_cost,
                         "slippage_cost": slippage_cost,

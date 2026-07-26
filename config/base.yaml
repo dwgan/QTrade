@@ -79,6 +79,12 @@ backtest:
     - 1.0
     - 2.0
 
+observation:
+  watchlist_symbols: []
+  candidate_count: 20
+  rank_mover_count: 10
+  shadow_lookback_calendar_days: 365
+
 update:
   datasets:
     - trade_calendar
