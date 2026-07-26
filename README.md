@@ -96,11 +96,16 @@ qtrade analyze factors --date 2026-07-24
 
 ```powershell
 qtrade research factors --start 2025-01-01 --end 2025-12-31
-qtrade backtest candidates --start 2025-01-01 --end 2025-12-31
+qtrade backtest candidates `
+  --start 2025-01-01 `
+  --end 2025-12-31 `
+  --split-date 2025-09-01
 ```
 
 研究结果写入 `reports/research`。规则与限制见
 [因子研究与组合回测](./docs/10-因子研究与组合回测.md)。
+成交限制和稳健性口径见
+[回测成交约束与稳健性](./docs/11-回测成交约束与稳健性.md)。
 
 ## 数据位置
 

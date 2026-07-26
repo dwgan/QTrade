@@ -45,6 +45,21 @@ class PerformanceMetrics(BaseModel):
     calmar_ratio: float | None
 
 
+class SamplePerformance(BaseModel):
+    sample: str
+    start_date: date
+    end_date: date
+    portfolio: PerformanceMetrics
+    benchmark: PerformanceMetrics
+
+
+class CostSensitivityMetric(BaseModel):
+    transaction_cost_rate: float
+    total_cost_rate: float
+    total_return: float
+    max_drawdown: float
+
+
 class CandidateBacktestAnalysis(BaseModel):
     start_date: date
     end_date: date
@@ -54,9 +69,16 @@ class CandidateBacktestAnalysis(BaseModel):
     final_equity: float
     execution_rule: str
     transaction_cost_rate: float
+    slippage_rate: float
     rebalance_count: int
     average_turnover: float
     total_cost: float
+    blocked_buy_orders: int
+    blocked_sell_orders: int
+    delayed_execution_days: int
+    sample_split_date: date | None
     portfolio: PerformanceMetrics
     benchmark: PerformanceMetrics
+    sample_performance: list[SamplePerformance] = Field(default_factory=list)
+    cost_sensitivity: list[CostSensitivityMetric] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

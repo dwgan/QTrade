@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -70,7 +71,12 @@ class ResearchService:
         )
         return FactorResearchResult(analysis, json_path, markdown_path)
 
-    def backtest_candidates(self, start_date: date, end_date: date) -> CandidateBacktestResult:
+    def backtest_candidates(
+        self,
+        start_date: date,
+        end_date: date,
+        sample_split_date: date | None = None,
+    ) -> CandidateBacktestResult:
         snapshots = self._snapshots(start_date, end_date)
         prices = self.curated_store.read_range(
             Dataset.DAILY_PRICES, self.provider, start_date, end_date
@@ -81,6 +87,11 @@ class ResearchService:
         index_daily = self.curated_store.read_range(
             Dataset.INDEX_DAILY, self.provider, start_date, end_date
         )
+        stock_limits = None
+        with suppress(FileNotFoundError):
+            stock_limits = self.curated_store.read_range(
+                Dataset.STOCK_LIMIT, self.provider, start_date, end_date
+            )
         analysis, curve, trades = CandidateBacktester(self.backtest_config).run(
             start_date,
             end_date,
@@ -88,6 +99,8 @@ class ResearchService:
             prices,
             adjustments,
             index_daily,
+            stock_limits,
+            sample_split_date,
         )
         json_path, markdown_path = self.reporter.write_backtest(analysis, curve, trades)
         return CandidateBacktestResult(analysis, json_path, markdown_path)

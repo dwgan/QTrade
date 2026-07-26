@@ -115,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--end", required=True, type=parse_date)
     backfill.add_argument(
         "--datasets",
-        default="daily_prices,adjust_factors,index_daily,daily_basic",
+        default="daily_prices,adjust_factors,index_daily,daily_basic,stock_limit",
         help="Comma-separated daily dataset names",
     )
 
@@ -159,6 +159,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     candidates.add_argument("--start", required=True, type=parse_date)
     candidates.add_argument("--end", required=True, type=parse_date)
+    candidates.add_argument(
+        "--split-date",
+        type=parse_date,
+        help="First out-of-sample date; defaults to configured split ratio",
+    )
     return parser
 
 
@@ -214,7 +219,7 @@ def run(args: argparse.Namespace) -> int:
                 succeeded = analysis.evaluated_snapshot_count > 0
             else:
                 result = build_research_service(config).backtest_candidates(
-                    args.start, args.end
+                    args.start, args.end, args.split_date
                 )
                 analysis = result.analysis
                 print(

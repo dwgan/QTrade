@@ -135,10 +135,22 @@ class ResearchConfig(BaseModel):
 class BacktestConfig(BaseModel):
     initial_capital: float = Field(default=1_000_000, gt=0)
     transaction_cost_rate: float = Field(default=0.0015, ge=0, lt=0.1)
+    slippage_rate: float = Field(default=0.0005, ge=0, lt=0.1)
     annual_risk_free_rate: float = Field(default=0.0, ge=0, lt=1)
     candidate_count: int = Field(default=20, ge=1)
     max_candidates_per_industry: int = Field(default=5, ge=1)
     benchmark_code: str = "000300.SH"
+    sample_split_ratio: float = Field(default=0.70, gt=0, lt=1)
+    cost_sensitivity_multipliers: list[float] = Field(
+        default_factory=lambda: [0.0, 1.0, 2.0]
+    )
+
+    @field_validator("cost_sensitivity_multipliers")
+    @classmethod
+    def valid_cost_multipliers(cls, value: list[float]) -> list[float]:
+        if not value or any(item < 0 for item in value):
+            raise ValueError("Cost sensitivity multipliers must be non-empty and non-negative.")
+        return list(dict.fromkeys(value))
 
 
 class ValidationConfig(BaseModel):

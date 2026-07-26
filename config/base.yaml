@@ -68,10 +68,16 @@ research:
 backtest:
   initial_capital: 1000000
   transaction_cost_rate: 0.0015
+  slippage_rate: 0.0005
   annual_risk_free_rate: 0.0
   candidate_count: 20
   max_candidates_per_industry: 5
   benchmark_code: 000300.SH
+  sample_split_ratio: 0.70
+  cost_sensitivity_multipliers:
+    - 0.0
+    - 1.0
+    - 2.0
 
 update:
   datasets:

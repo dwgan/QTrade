@@ -56,10 +56,13 @@ def test_candidate_backtest_command_parses() -> None:
             "2025-01-01",
             "--end",
             "2025-12-31",
+            "--split-date",
+            "2025-09-01",
         ]
     )
 
     assert args.backtest_command == "candidates"
+    assert args.split_date == date(2025, 9, 1)
 
 
 def test_financial_snapshot_command_parses() -> None:
@@ -105,4 +108,5 @@ def test_backfill_command_parses_default_datasets() -> None:
         Dataset.ADJUST_FACTORS,
         Dataset.INDEX_DAILY,
         Dataset.DAILY_BASIC,
+        Dataset.STOCK_LIMIT,
     ]

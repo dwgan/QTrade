@@ -8,7 +8,12 @@ import polars as pl
 
 from qtrade.config import BacktestConfig
 from qtrade.research.analyzer import adjusted_prices, date_expression
-from qtrade.research.models import CandidateBacktestAnalysis, PerformanceMetrics
+from qtrade.research.models import (
+    CandidateBacktestAnalysis,
+    CostSensitivityMetric,
+    PerformanceMetrics,
+    SamplePerformance,
+)
 
 
 def _performance(values: list[float], annual_risk_free_rate: float) -> PerformanceMetrics:
@@ -71,6 +76,160 @@ class CandidateBacktester:
                 break
         return {code: 1 / len(selected) for code in selected} if selected else {}
 
+    @staticmethod
+    def _execution_lookups(
+        prices: pl.DataFrame,
+        stock_limits: pl.DataFrame | None,
+    ) -> tuple[dict[tuple[date, str], float], dict[tuple[date, str], tuple[float, float]]]:
+        close_frame = prices.select("ts_code", "trade_date", "close").with_columns(
+            date_expression("trade_date")
+        )
+        closes = {
+            (row["trade_date"], row["ts_code"]): float(row["close"])
+            for row in close_frame.to_dicts()
+        }
+        limits: dict[tuple[date, str], tuple[float, float]] = {}
+        if stock_limits is not None and not stock_limits.is_empty():
+            required = {"ts_code", "trade_date", "up_limit", "down_limit"}
+            if missing := required - set(stock_limits.columns):
+                raise ValueError(
+                    f"Stock limits are missing columns: {', '.join(sorted(missing))}"
+                )
+            limit_frame = stock_limits.select(
+                "ts_code", "trade_date", "up_limit", "down_limit"
+            ).with_columns(date_expression("trade_date"))
+            limits = {
+                (row["trade_date"], row["ts_code"]): (
+                    float(row["up_limit"]),
+                    float(row["down_limit"]),
+                )
+                for row in limit_frame.to_dicts()
+            }
+        return closes, limits
+
+    @staticmethod
+    def _attempt_rebalance(
+        trade_date: date,
+        holdings: dict[str, float],
+        targets: dict[str, float],
+        closes: dict[tuple[date, str], float],
+        limits: dict[tuple[date, str], tuple[float, float]],
+    ) -> tuple[dict[str, float], float, int, int]:
+        updated = dict(holdings)
+        blocked_sells = 0
+        blocked_buys = 0
+
+        def state(code: str) -> tuple[bool, bool, bool]:
+            close = closes.get((trade_date, code))
+            if close is None:
+                return False, False, False
+            limit = limits.get((trade_date, code))
+            at_up = limit is not None and close >= limit[0] - 1e-8
+            at_down = limit is not None and close <= limit[1] + 1e-8
+            return True, at_up, at_down
+
+        for code in set(holdings) | set(targets):
+            current = holdings.get(code, 0.0)
+            target = targets.get(code, 0.0)
+            has_price, _, at_down = state(code)
+            if target < current:
+                if has_price and not at_down:
+                    updated[code] = target
+                else:
+                    blocked_sells += 1
+
+        available_cash = max(0.0, 1 - sum(updated.values()))
+        buy_needs: dict[str, float] = {}
+        for code in set(targets) | set(updated):
+            current = updated.get(code, 0.0)
+            target = targets.get(code, 0.0)
+            if target <= current:
+                continue
+            has_price, at_up, _ = state(code)
+            if has_price and not at_up:
+                buy_needs[code] = target - current
+            else:
+                blocked_buys += 1
+        total_need = sum(buy_needs.values())
+        fill_ratio = min(1.0, available_cash / total_need) if total_need else 0.0
+        for code, need in buy_needs.items():
+            updated[code] = updated.get(code, 0.0) + need * fill_ratio
+        updated = {code: weight for code, weight in updated.items() if weight > 1e-12}
+        turnover = sum(
+            abs(updated.get(code, 0.0) - holdings.get(code, 0.0))
+            for code in set(updated) | set(holdings)
+        )
+        return updated, turnover, blocked_buys, blocked_sells
+
+    def _sample_performance(
+        self,
+        curve: pl.DataFrame,
+        split_date: date,
+    ) -> list[SamplePerformance]:
+        results: list[SamplePerformance] = []
+        for label, sample in (
+            ("in_sample", curve.filter(pl.col("trade_date") < split_date)),
+            ("out_of_sample", curve.filter(pl.col("trade_date") >= split_date)),
+        ):
+            if sample.is_empty():
+                continue
+            if label == "in_sample":
+                equity_base = self.config.initial_capital
+                benchmark_base = self.config.initial_capital
+            else:
+                history = curve.filter(pl.col("trade_date") < split_date)
+                equity_base = (
+                    history.get_column("equity").tail(1).item()
+                    if not history.is_empty()
+                    else self.config.initial_capital
+                )
+                benchmark_base = (
+                    history.get_column("benchmark_equity").tail(1).item()
+                    if not history.is_empty()
+                    else self.config.initial_capital
+                )
+            results.append(
+                SamplePerformance(
+                    sample=label,
+                    start_date=sample.get_column("trade_date").min(),
+                    end_date=sample.get_column("trade_date").max(),
+                    portfolio=_performance(
+                        [equity_base, *sample.get_column("equity").to_list()],
+                        self.config.annual_risk_free_rate,
+                    ),
+                    benchmark=_performance(
+                        [
+                            benchmark_base,
+                            *sample.get_column("benchmark_equity").to_list(),
+                        ],
+                        self.config.annual_risk_free_rate,
+                    ),
+                )
+            )
+        return results
+
+    def _cost_sensitivity(self, curve: pl.DataFrame) -> list[CostSensitivityMetric]:
+        results: list[CostSensitivityMetric] = []
+        for multiplier in self.config.cost_sensitivity_multipliers:
+            transaction_rate = self.config.transaction_cost_rate * multiplier
+            total_rate = transaction_rate + self.config.slippage_rate
+            equity = self.config.initial_capital
+            values = [equity]
+            for row in curve.select("daily_return", "turnover").to_dicts():
+                equity *= 1 + float(row["daily_return"])
+                equity *= max(0.0, 1 - float(row["turnover"]) * total_rate)
+                values.append(equity)
+            performance = _performance(values, self.config.annual_risk_free_rate)
+            results.append(
+                CostSensitivityMetric(
+                    transaction_cost_rate=transaction_rate,
+                    total_cost_rate=total_rate,
+                    total_return=performance.total_return,
+                    max_drawdown=performance.max_drawdown,
+                )
+            )
+        return results
+
     def run(
         self,
         start_date: date,
@@ -79,9 +238,12 @@ class CandidateBacktester:
         prices: pl.DataFrame,
         adjustments: pl.DataFrame,
         index_daily: pl.DataFrame,
+        stock_limits: pl.DataFrame | None = None,
+        sample_split_date: date | None = None,
     ) -> tuple[CandidateBacktestAnalysis, pl.DataFrame, pl.DataFrame]:
-        adjusted = adjusted_prices(prices, adjustments)
-        adjusted = adjusted.filter(
+        if sample_split_date is not None and not start_date < sample_split_date <= end_date:
+            raise ValueError("Sample split date must be after start and on or before end.")
+        adjusted = adjusted_prices(prices, adjustments).filter(
             (pl.col("trade_date") >= start_date) & (pl.col("trade_date") <= end_date)
         )
         trading_dates = adjusted.get_column("trade_date").unique().sort().to_list()
@@ -92,15 +254,20 @@ class CandidateBacktester:
             (row["trade_date"], row["ts_code"]): float(row["adjusted_close"])
             for row in adjusted.select("trade_date", "ts_code", "adjusted_close").to_dicts()
         }
+        closes, limits = self._execution_lookups(prices, stock_limits)
         schedules: dict[date, tuple[date, dict[str, float]]] = {}
         warnings: list[str] = []
+        if stock_limits is None or stock_limits.is_empty():
+            warnings.append("Stock limit data is unavailable; limit-up/down constraints disabled.")
         for signal_date, ranking in snapshots:
             index = date_index.get(signal_date)
             if index is None or index + 1 >= len(trading_dates):
                 warnings.append(f"{signal_date}: no next trading day; signal skipped.")
                 continue
-            execution_date = trading_dates[index + 1]
-            schedules[execution_date] = (signal_date, self._target_weights(ranking))
+            schedules[trading_dates[index + 1]] = (
+                signal_date,
+                self._target_weights(ranking),
+            )
 
         index_frame = (
             index_daily.filter(pl.col("ts_code") == self.config.benchmark_code)
@@ -122,10 +289,16 @@ class CandidateBacktester:
         holdings: dict[str, float] = {}
         previous_prices: dict[str, float] = {}
         previous_benchmark: float | None = None
+        pending_targets: dict[str, float] | None = None
+        pending_signal_date: date | None = None
+        pending_since: date | None = None
         curve_rows: list[dict] = []
         trade_rows: list[dict] = []
         turnover_values: list[float] = []
         total_cost = 0.0
+        blocked_buys_total = 0
+        blocked_sells_total = 0
+        delayed_days = 0
 
         for trade_date in trading_dates:
             returns: dict[str, float] = {}
@@ -135,52 +308,70 @@ class CandidateBacktester:
                 returns[code] = current / previous - 1 if current and previous else 0.0
             portfolio_return = sum(holdings[code] * returns[code] for code in holdings)
             equity *= 1 + portfolio_return
-            if holdings:
-                gross = sum(holdings[code] * (1 + returns[code]) for code in holdings)
+            cash_weight = max(0.0, 1 - sum(holdings.values()))
+            gross = cash_weight + sum(
+                holdings[code] * (1 + returns[code]) for code in holdings
+            )
+            if holdings and gross > 0:
                 holdings = {
                     code: holdings[code] * (1 + returns[code]) / gross
                     for code in holdings
-                    if gross > 0
                 }
 
-            turnover = 0.0
-            cost = 0.0
-            signal_date: date | None = None
             if trade_date in schedules:
-                signal_date, targets = schedules[trade_date]
-                available = {
-                    code: weight
-                    for code, weight in targets.items()
-                    if price_lookup.get((trade_date, code)) is not None
-                }
-                if len(available) != len(targets):
-                    warnings.append(
-                        f"{trade_date}: {len(targets) - len(available)} selected stocks "
-                        "had no execution-date price and were skipped."
-                    )
-                available_total = sum(available.values())
-                targets = {
-                    code: weight / available_total for code, weight in available.items()
-                }
-                turnover = sum(
-                    abs(targets.get(code, 0.0) - holdings.get(code, 0.0))
-                    for code in set(targets) | set(holdings)
+                pending_signal_date, pending_targets = schedules[trade_date]
+                pending_since = trade_date
+
+            turnover = 0.0
+            transaction_cost = 0.0
+            slippage_cost = 0.0
+            blocked_buys = 0
+            blocked_sells = 0
+            if pending_targets is not None and pending_signal_date is not None:
+                holdings, turnover, blocked_buys, blocked_sells = self._attempt_rebalance(
+                    trade_date,
+                    holdings,
+                    pending_targets,
+                    closes,
+                    limits,
                 )
-                cost = equity * turnover * self.config.transaction_cost_rate
+                transaction_cost = (
+                    equity * turnover * self.config.transaction_cost_rate
+                )
+                slippage_cost = equity * turnover * self.config.slippage_rate
+                cost = transaction_cost + slippage_cost
                 equity -= cost
                 total_cost += cost
-                turnover_values.append(turnover)
-                holdings = targets
+                blocked_buys_total += blocked_buys
+                blocked_sells_total += blocked_sells
+                if pending_since is not None and trade_date > pending_since:
+                    delayed_days += 1
+                if turnover > 0:
+                    turnover_values.append(turnover)
                 trade_rows.append(
                     {
-                        "signal_date": signal_date,
+                        "signal_date": pending_signal_date,
                         "execution_date": trade_date,
-                        "holdings": len(targets),
+                        "status": (
+                            "partial"
+                            if blocked_buys or blocked_sells
+                            else "completed"
+                        ),
+                        "holdings": len(holdings),
                         "turnover": turnover,
-                        "cost": cost,
+                        "transaction_cost": transaction_cost,
+                        "slippage_cost": slippage_cost,
+                        "blocked_buys": blocked_buys,
+                        "blocked_sells": blocked_sells,
                         "equity_after_cost": equity,
                     }
                 )
+                if blocked_buys == 0 and blocked_sells == 0:
+                    pending_targets = None
+                    pending_signal_date = None
+                    pending_since = None
+            else:
+                cost = 0.0
 
             current_benchmark = benchmark_close.get(trade_date)
             benchmark_return = (
@@ -200,6 +391,7 @@ class CandidateBacktester:
                     "benchmark_daily_return": benchmark_return,
                     "turnover": turnover,
                     "cost": cost,
+                    "cash_weight": max(0.0, 1 - sum(holdings.values())),
                 }
             )
             previous_prices = {
@@ -212,25 +404,47 @@ class CandidateBacktester:
             }
 
         curve = pl.DataFrame(curve_rows)
+        if sample_split_date is None and len(trading_dates) >= 3:
+            split_index = min(
+                len(trading_dates) - 1,
+                max(1, int(len(trading_dates) * self.config.sample_split_ratio)),
+            )
+            sample_split_date = trading_dates[split_index]
         analysis = CandidateBacktestAnalysis(
             start_date=start_date,
             end_date=end_date,
             benchmark_code=self.config.benchmark_code,
             initial_capital=self.config.initial_capital,
             final_equity=equity,
-            execution_rule="signal close T; rebalance at next trading-day close T+1",
+            execution_rule=(
+                "signal close T; attempt at T+1 close; blocked orders retry daily"
+            ),
             transaction_cost_rate=self.config.transaction_cost_rate,
-            rebalance_count=len(trade_rows),
+            slippage_rate=self.config.slippage_rate,
+            rebalance_count=len(turnover_values),
             average_turnover=statistics.fmean(turnover_values) if turnover_values else 0.0,
             total_cost=total_cost,
+            blocked_buy_orders=blocked_buys_total,
+            blocked_sell_orders=blocked_sells_total,
+            delayed_execution_days=delayed_days,
+            sample_split_date=sample_split_date,
             portfolio=_performance(
-                curve.get_column("equity").to_list(),
+                [self.config.initial_capital, *curve.get_column("equity").to_list()],
                 self.config.annual_risk_free_rate,
             ),
             benchmark=_performance(
-                curve.get_column("benchmark_equity").to_list(),
+                [
+                    self.config.initial_capital,
+                    *curve.get_column("benchmark_equity").to_list(),
+                ],
                 self.config.annual_risk_free_rate,
             ),
+            sample_performance=(
+                self._sample_performance(curve, sample_split_date)
+                if sample_split_date is not None
+                else []
+            ),
+            cost_sensitivity=self._cost_sensitivity(curve),
             warnings=warnings,
         )
         return analysis, curve, pl.DataFrame(trade_rows)

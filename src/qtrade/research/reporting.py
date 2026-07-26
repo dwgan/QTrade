@@ -121,7 +121,11 @@ class ResearchReportWriter:
                 "",
                 f"- 执行规则：{analysis.execution_rule}",
                 f"- 单边成本率：{analysis.transaction_cost_rate:.3%}",
+                f"- 滑点率：{analysis.slippage_rate:.3%}",
                 f"- 调仓次数：{analysis.rebalance_count}",
+                f"- 受限买入/卖出：{analysis.blocked_buy_orders}/"
+                f"{analysis.blocked_sell_orders}",
+                f"- 延迟执行交易日：{analysis.delayed_execution_days}",
                 f"- 期末权益：{analysis.final_equity:,.2f}",
                 "",
                 "| 指标 | 组合 | 基准 |",
@@ -135,7 +139,25 @@ class ResearchReportWriter:
                 f"| 最大回撤 | {analysis.portfolio.max_drawdown:.2%} | "
                 f"{analysis.benchmark.max_drawdown:.2%} |",
                 "",
-                "> 回测包含参数化交易成本，但未模拟滑点、涨跌停无法成交和容量约束。",
+                "## 样本拆分",
+                "",
+                *[
+                    f"- {item.sample}（{item.start_date} 至 {item.end_date}）："
+                    f"{item.portfolio.total_return:.2%}"
+                    for item in analysis.sample_performance
+                ],
+                "",
+                "## 成本敏感性",
+                "",
+                *[
+                    f"- 交易成本 {item.transaction_cost_rate:.3%}，"
+                    f"总成本率 {item.total_cost_rate:.3%}："
+                    f"收益 {item.total_return:.2%}，回撤 {item.max_drawdown:.2%}"
+                    for item in analysis.cost_sensitivity
+                ],
+                "",
+                "> 回测已模拟停牌无报价、收盘涨跌停限制、延迟成交和滑点；"
+                "尚未模拟整手、成交容量与盘中价格路径。",
                 "",
             ]
         )
