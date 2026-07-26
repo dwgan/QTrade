@@ -50,6 +50,9 @@ factors:
   liquidity_exclusion_percentile: 0.20
   candidate_count: 30
   max_candidates_per_industry: 5
+  universe_index_codes:
+    - 000300.SH
+    - 000905.SH
   exclude_industry_keywords:
     - 银行
     - 保险

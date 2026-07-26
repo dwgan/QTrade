@@ -104,6 +104,9 @@ class FactorConfig(BaseModel):
     liquidity_exclusion_percentile: float = Field(default=0.20, ge=0, lt=0.5)
     candidate_count: int = Field(default=30, ge=1)
     max_candidates_per_industry: int = Field(default=5, ge=1)
+    universe_index_codes: list[str] = Field(
+        default_factory=lambda: ["000300.SH", "000905.SH"]
+    )
     exclude_industry_keywords: list[str] = Field(
         default_factory=lambda: ["银行", "保险", "证券", "多元金融"]
     )
@@ -128,6 +131,14 @@ class FactorConfig(BaseModel):
         if abs(total - 1.0) > 1e-9:
             raise ValueError("Factor weights must sum to 1.")
         return value
+
+    @field_validator("universe_index_codes")
+    @classmethod
+    def unique_universe_index_codes(cls, value: list[str]) -> list[str]:
+        normalized = list(dict.fromkeys(item.strip().upper() for item in value if item.strip()))
+        if not normalized:
+            raise ValueError("Factor universe requires at least one index code.")
+        return normalized
 
 
 class ResearchConfig(BaseModel):

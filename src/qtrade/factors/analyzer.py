@@ -327,9 +327,13 @@ class FactorAnalyzer:
         if missing := columns - set(frame.columns):
             raise ValueError(f"Security master is missing columns: {', '.join(sorted(missing))}")
         availability = (
-            FactorAnalyzer._date_expression("available_from")
-            if "available_from" in frame.columns
-            else FactorAnalyzer._date_expression("list_date")
+            FactorAnalyzer._date_expression("universe_available_from")
+            if "universe_available_from" in frame.columns
+            else (
+                FactorAnalyzer._date_expression("available_from")
+                if "available_from" in frame.columns
+                else FactorAnalyzer._date_expression("list_date")
+            )
         )
         return (
             frame.select(

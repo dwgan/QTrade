@@ -10,6 +10,7 @@ from qtrade.domain import Dataset
 from qtrade.factors.analyzer import FactorAnalyzer
 from qtrade.factors.models import FactorAnalysis
 from qtrade.factors.reporting import FactorReportWriter
+from qtrade.factors.universe import PointInTimeUniverseBuilder
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,9 @@ class FactorAnalysisService:
         self.curated_store = curated_store
         self.provider = provider
         self.analyzer = FactorAnalyzer(config)
+        self.universe_builder = PointInTimeUniverseBuilder(
+            config.universe_index_codes
+        )
         self.reporter = FactorReportWriter(reports_root)
 
     def run(self, as_of_date: date) -> FactorAnalysisResult:
@@ -51,6 +55,18 @@ class FactorAnalysisService:
         master_date, master = self.curated_store.read_latest_on_or_before(
             Dataset.SECURITY_MASTER, self.provider, as_of_date
         )
+        names_date, names = self.curated_store.read_latest_on_or_before(
+            Dataset.SECURITY_NAMES, self.provider, as_of_date
+        )
+        members_date, members = self.curated_store.read_latest_on_or_before(
+            Dataset.INDEX_MEMBERS, self.provider, as_of_date
+        )
+        universe = self.universe_builder.build(
+            as_of_date,
+            master,
+            names,
+            members,
+        )
         stock_limits = None
         try:
             limit_date, limit_frame = self.curated_store.read_latest_on_or_before(
@@ -67,12 +83,19 @@ class FactorAnalysisService:
             adjustments,
             daily_basic,
             financials,
-            master,
+            universe.frame,
             stock_limits,
             basic_date,
             financial_date,
             master_date,
         )
+        computation.analysis.security_names_snapshot_date = names_date
+        computation.analysis.index_members_snapshot_date = members_date
+        computation.analysis.universe_index_codes = universe.audit.index_codes
+        computation.analysis.index_membership_dates = (
+            universe.audit.index_membership_dates
+        )
+        computation.analysis.warnings.extend(universe.audit.warnings)
         json_path, markdown_path, rankings_path = self.reporter.write(computation)
         return FactorAnalysisResult(
             computation.analysis,
