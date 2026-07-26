@@ -234,6 +234,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=12,
         help="Number of quarters fetched before the first snapshot (default: 12)",
     )
+    research_backfill = data_commands.add_parser(
+        "research-backfill",
+        help="Prepare all point-in-time datasets required by historical research",
+    )
+    research_backfill.add_argument("--start", required=True, type=parse_date)
+    research_backfill.add_argument("--end", required=True, type=parse_date)
+    research_backfill.add_argument(
+        "--lookback-quarters",
+        type=int,
+        default=12,
+        help="Number of financial quarters before the research start (default: 12)",
+    )
 
     data_commands.add_parser("datasets", help="List supported datasets")
 
@@ -805,6 +817,67 @@ def run(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
             return 0 if result.succeeded else 1
+        if args.data_command == "research-backfill":
+            stages = (
+                (
+                    "daily trading data",
+                    lambda: service.backfill(
+                        args.start,
+                        args.end,
+                        [
+                            Dataset.DAILY_PRICES,
+                            Dataset.ADJUST_FACTORS,
+                            Dataset.STOCK_LIMIT,
+                        ],
+                    ),
+                ),
+                (
+                    "index daily history",
+                    lambda: service.backfill_index_daily(args.start, args.end),
+                ),
+                (
+                    "month-end valuation data",
+                    lambda: service.backfill(
+                        args.start,
+                        args.end,
+                        [Dataset.DAILY_BASIC],
+                        frequency="month_end",
+                    ),
+                ),
+                (
+                    "month-end index membership",
+                    lambda: service.backfill(
+                        args.start,
+                        args.end,
+                        [Dataset.INDEX_MEMBERS],
+                        frequency="month_end",
+                    ),
+                ),
+                (
+                    "point-in-time financial snapshots",
+                    lambda: service.backfill_financial_snapshots(
+                        args.start,
+                        args.end,
+                        args.lookback_quarters,
+                    ),
+                ),
+            )
+            for stage_name, execute_stage in stages:
+                print(f"Starting: {stage_name}")
+                result = execute_stage()
+                print(
+                    f"Finished: {stage_name}; expected: {result.trading_dates}; "
+                    f"completed: {result.completed_dates}; "
+                    f"skipped: {result.skipped_dates}; "
+                    f"failed: {len(result.failed_dates)}"
+                )
+                if not result.succeeded:
+                    print(
+                        f"Research backfill stopped at: {stage_name}",
+                        file=sys.stderr,
+                    )
+                    return 1
+            return 0
 
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

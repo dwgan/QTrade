@@ -94,6 +94,16 @@ qtrade data backfill --start 2025-01-01 --end 2026-07-24
 多年研究数据建议分层回填：
 
 ```powershell
+qtrade data research-backfill `
+  --start 2015-01-01 `
+  --end 2026-07-24
+```
+
+该命令按顺序准备个股日线、指数行情、月末估值、历史指数成分和防未来数据的财务快照。任何阶段失败都会立即停止；修复问题后执行同一命令即可从已有分区继续。
+
+也可以单独执行各层：
+
+```powershell
 qtrade data backfill `
   --start 2015-01-01 `
   --end 2026-07-24 `
