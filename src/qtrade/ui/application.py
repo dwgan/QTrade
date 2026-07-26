@@ -15,6 +15,8 @@ from typing import Any
 
 import polars as pl
 
+from qtrade.data.storage import ParquetDatasetStore
+from qtrade.domain import Dataset
 from qtrade.research.protocols import ExperimentStore, PartitionName, ProtocolStore
 
 REPORT_NAMES = (
@@ -298,10 +300,22 @@ class BacktestTaskManager:
 
 
 class BacktestRepository:
-    def __init__(self, runtime_root: Path, reports_root: Path) -> None:
+    def __init__(
+        self,
+        runtime_root: Path,
+        reports_root: Path,
+        curated_root: Path | None = None,
+        provider: str | None = None,
+    ) -> None:
         self.protocols = ProtocolStore(runtime_root)
         self.experiments = ExperimentStore(runtime_root)
         self.reports_root = Path(reports_root).resolve()
+        self.curated_store = (
+            ParquetDatasetStore(curated_root, "curated")
+            if curated_root is not None
+            else None
+        )
+        self.provider = provider
 
     def meta(self) -> dict[str, Any]:
         protocols = []
@@ -383,11 +397,22 @@ class BacktestRepository:
         curve_path = directory / "equity_curve.parquet"
         trades_path = directory / "rebalances.parquet"
         curve: list[dict[str, Any]] = []
+        curve_dates: list[date] = []
         if curve_path.is_file():
             frame = pl.read_parquet(curve_path).select(
                 "trade_date",
                 "equity",
                 "benchmark_equity",
+            )
+            curve_dates = (
+                frame.select(
+                    pl.col("trade_date")
+                    .cast(pl.String)
+                    .str.to_date(strict=False),
+                )
+                .get_column("trade_date")
+                .drop_nulls()
+                .to_list()
             )
             if frame.height > 320:
                 indices = sorted(
@@ -402,6 +427,8 @@ class BacktestRepository:
             ).to_dicts()
         rebalances: list[dict[str, Any]] = []
         positions: list[dict[str, Any]] = []
+        daily_positions: list[dict[str, Any]] = []
+        securities: dict[str, dict[str, str | None]] = {}
         if trades_path.is_file():
             trades = pl.read_parquet(trades_path)
             available = [
@@ -428,13 +455,61 @@ class BacktestRepository:
                 .to_dicts()
             )
             positions = self._position_history(trades, summary)
+            names = self._signal_security_names(summary)
+            securities = {
+                code: {
+                    "name": self._latest_security_name(names, code),
+                    "industry": self._latest_security_industry(names, code),
+                }
+                for code in sorted(
+                    {
+                        item["ts_code"]
+                        for position in positions
+                        for item in position["holdings"]
+                    }
+                )
+            }
+            daily_positions = self._daily_position_history(curve_dates, trades)
         return {
             "experiment_id": experiment_id,
             "summary": summary,
             "curve": curve,
             "rebalances": rebalances,
             "positions": positions,
+            "daily_positions": daily_positions,
+            "securities": securities,
         }
+
+    @staticmethod
+    def _daily_position_history(
+        curve_dates: list[date],
+        trades: pl.DataFrame,
+    ) -> list[dict[str, Any]]:
+        if not curve_dates or {
+            "execution_date",
+            "holding_codes",
+        } - set(trades.columns):
+            return []
+        by_date: dict[date, list[str]] = {}
+        for row in trades.sort(["execution_date", "signal_date"]).select(
+            "execution_date",
+            "holding_codes",
+        ).to_dicts():
+            by_date[row["execution_date"]] = [
+                str(code) for code in (row["holding_codes"] or [])
+            ]
+        current: list[str] = []
+        history: list[dict[str, Any]] = []
+        for trading_date in curve_dates:
+            if trading_date in by_date:
+                current = by_date[trading_date]
+            history.append(
+                {
+                    "trade_date": trading_date.isoformat(),
+                    "codes": current,
+                }
+            )
+        return history
 
     def _position_history(
         self,
@@ -553,6 +628,165 @@ class BacktestRepository:
             if ts_code == code and value.get("name")
         ]
         return max(matches, default=("", None))[1]
+
+    @staticmethod
+    def _latest_security_industry(
+        names: dict[tuple[str, str], dict[str, str | None]],
+        code: str,
+    ) -> str | None:
+        matches = [
+            (signal_date, value.get("industry"))
+            for (signal_date, ts_code), value in names.items()
+            if ts_code == code and value.get("industry")
+        ]
+        return max(matches, default=("", None))[1]
+
+    def security_chart(
+        self,
+        experiment_id: str,
+        ts_code: str,
+    ) -> dict[str, Any]:
+        if not SYMBOL_PATTERN.fullmatch(ts_code):
+            raise ValueError("股票代码格式无效。")
+        if self.curated_store is None or self.provider is None:
+            raise RuntimeError("界面未配置回测行情存储。")
+        record = self.experiments.load(experiment_id)
+        if not record.result_json:
+            raise FileNotFoundError("该实验尚未生成回测结果。")
+        summary_path = Path(record.result_json).resolve()
+        if (
+            self.reports_root not in summary_path.parents
+            or not summary_path.is_file()
+        ):
+            raise FileNotFoundError("回测结果文件不存在或不在报告目录内。")
+        summary = _load_json(summary_path)
+        if summary is None:
+            raise ValueError("回测结果 JSON 无效。")
+        start_date = date.fromisoformat(str(summary["start_date"]))
+        end_date = date.fromisoformat(str(summary["end_date"]))
+        prices = self._read_security_range(
+            Dataset.DAILY_PRICES,
+            ts_code,
+            start_date,
+            end_date,
+            ("ts_code", "trade_date", "open", "high", "low", "close", "vol"),
+        )
+        adjustments = self._read_security_range(
+            Dataset.ADJUST_FACTORS,
+            ts_code,
+            start_date,
+            end_date,
+            ("ts_code", "trade_date", "adj_factor"),
+        )
+        frame = (
+            prices.join(
+                adjustments,
+                on=["ts_code", "trade_date"],
+                how="inner",
+            )
+            .sort("trade_date")
+        )
+        if frame.is_empty():
+            raise FileNotFoundError(f"回测区间内没有 {ts_code} 的行情。")
+        latest_factor = float(frame.get_column("adj_factor").tail(1).item())
+        bars = (
+            frame.select(
+                pl.col("trade_date")
+                .cast(pl.String)
+                .str.replace_all("-", "")
+                .str.strptime(pl.Date, "%Y%m%d", strict=False),
+                *[
+                    (
+                        pl.col(column).cast(pl.Float64, strict=False)
+                        * pl.col("adj_factor").cast(pl.Float64, strict=False)
+                        / latest_factor
+                    ).alias(column)
+                    for column in ("open", "high", "low", "close")
+                ],
+                pl.col("vol").cast(pl.Float64, strict=False),
+            )
+            .drop_nulls(["trade_date", "open", "high", "low", "close"])
+            .with_columns(pl.col("trade_date").cast(pl.String))
+            .to_dicts()
+        )
+        trades_path = summary_path.parent / "rebalances.parquet"
+        markers: list[dict[str, str]] = []
+        if trades_path.is_file():
+            markers = self._security_markers(
+                pl.read_parquet(trades_path),
+                ts_code,
+            )
+        names = self._signal_security_names(summary)
+        return {
+            "experiment_id": experiment_id,
+            "ts_code": ts_code,
+            "name": self._latest_security_name(names, ts_code),
+            "bars": bars,
+            "markers": markers,
+            "price_mode": "forward_adjusted_to_backtest_end",
+        }
+
+    def _read_security_range(
+        self,
+        dataset: Dataset,
+        ts_code: str,
+        start_date: date,
+        end_date: date,
+        columns: tuple[str, ...],
+    ) -> pl.DataFrame:
+        assert self.curated_store is not None
+        assert self.provider is not None
+        partition_dates = self.curated_store.partition_dates(
+            dataset,
+            self.provider,
+            start_date,
+            end_date,
+        )
+        paths = [
+            self.curated_store.data_path(dataset, self.provider, partition_date)
+            for partition_date in sorted(partition_dates)
+        ]
+        if not paths:
+            raise FileNotFoundError(
+                f"回测区间内没有 {dataset.value} 行情分区。"
+            )
+        return (
+            pl.scan_parquet(paths)
+            .select(columns)
+            .filter(pl.col("ts_code") == ts_code)
+            .collect()
+        )
+
+    @staticmethod
+    def _security_markers(
+        trades: pl.DataFrame,
+        ts_code: str,
+    ) -> list[dict[str, str]]:
+        if {"execution_date", "holding_codes"} - set(trades.columns):
+            return []
+        previous: set[str] = set()
+        markers: list[dict[str, str]] = []
+        seen: set[tuple[date, str]] = set()
+        for row in trades.sort(["execution_date", "signal_date"]).select(
+            "execution_date",
+            "holding_codes",
+        ).to_dicts():
+            current = {str(code) for code in (row["holding_codes"] or [])}
+            side = None
+            if ts_code in current and ts_code not in previous:
+                side = "buy"
+            elif ts_code in previous and ts_code not in current:
+                side = "sell"
+            if side and (row["execution_date"], side) not in seen:
+                markers.append(
+                    {
+                        "trade_date": row["execution_date"].isoformat(),
+                        "side": side,
+                    }
+                )
+                seen.add((row["execution_date"], side))
+            previous = current
+        return markers
 
 
 class SubprocessBacktestRunner:

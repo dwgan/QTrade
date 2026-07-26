@@ -397,6 +397,34 @@ footer { max-width: 1440px; margin: 30px auto 0; color: #8b969e; text-align: cen
 .removed-positions { margin-top: 12px; color: var(--muted); font-size: 11px; }
 .removed-positions strong { color: var(--ink); }
 .removed-chip { display: inline-block; margin: 5px 5px 0 0; padding: 4px 7px; border-radius: 5px; color: var(--red); background: var(--red-soft); }
+.daily-position-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: end;
+  margin: 26px 0 12px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.daily-position-head strong, .daily-position-head span { display: block; }
+.daily-position-head span { margin-top: 4px; color: var(--muted); font-size: 11px; }
+#dailyPositionDate { min-width: 230px; padding: 9px 10px; border-radius: 8px; }
+.daily-position-layout { display: grid; grid-template-columns: 330px 1fr; gap: 18px; align-items: start; }
+.daily-holdings { max-height: 440px; border: 1px solid var(--line); border-radius: 9px; }
+.daily-holdings tbody tr { cursor: pointer; }
+.daily-holdings tbody tr.selected { background: var(--cream); box-shadow: inset 2px 0 var(--gold); }
+.security-chart-panel { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 9px; }
+.security-chart { width: 100%; height: auto; margin-top: 8px; background: #fafbfb; }
+.candle-wick { stroke-width: 1; }
+.candle-up { fill: #dc6367; stroke: #dc6367; }
+.candle-down { fill: #35a887; stroke: #35a887; }
+.trade-marker-buy { fill: #c9912f; }
+.trade-marker-sell { fill: #315a7a; }
+.trade-marker-label { font: 700 10px sans-serif; }
+.marker-legend { display: inline-block; width: 8px; height: 8px; margin: 0 4px 0 10px; border-radius: 2px; }
+.marker-legend.buy { background: #c9912f; }
+.marker-legend.sell { background: #315a7a; }
+.chart-note { margin: 8px 0 0; color: var(--muted); font-size: 10px; }
 .toast { position: fixed; right: 24px; bottom: 24px; z-index: 30; max-width: 380px; padding: 12px 16px; border-radius: 9px; color: #fff; background: var(--navy-2); box-shadow: var(--shadow); transform: translateY(100px); opacity: 0; transition: .25s; }
 .toast.visible { transform: translateY(0); opacity: 1; }
 .toast.error { background: var(--red); }
@@ -432,7 +460,10 @@ footer { max-width: 1440px; margin: 30px auto 0; color: #8b969e; text-align: cen
   .backtest-metrics article:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   #backtestResultSelect { width: 100%; }
   .position-head { display: block; }
+  .daily-position-head { display: block; }
   #positionDateSelect { width: 100%; margin-top: 12px; }
+  #dailyPositionDate { width: 100%; margin-top: 12px; }
+  .daily-position-layout { grid-template-columns: 1fr; }
   .partition-form > div { grid-template-columns: 55px 1fr; }
   .partition-form span { display: none; }
 }

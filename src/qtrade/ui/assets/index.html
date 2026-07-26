@@ -328,6 +328,31 @@
                 </table>
               </div>
               <div id="removedPositions" class="removed-positions"></div>
+
+              <div class="daily-position-head">
+                <div>
+                  <strong>每日持仓与个股买卖点</strong>
+                  <span>选择交易日，再点击一只股票查看其复权K线和进入/退出组合的位置。</span>
+                </div>
+                <select id="dailyPositionDate" aria-label="选择每日持仓日期"></select>
+              </div>
+              <div id="dailyPositionSummary" class="position-summary"></div>
+              <div class="daily-position-layout">
+                <div class="table-wrap daily-holdings">
+                  <table>
+                    <thead><tr><th>股票</th><th>名称</th><th>行业</th></tr></thead>
+                    <tbody id="dailyPositionRows"></tbody>
+                  </table>
+                </div>
+                <div class="security-chart-panel">
+                  <div class="chart-head">
+                    <strong id="securityChartTitle">点击左侧股票查看K线</strong>
+                    <span><i class="marker-legend buy"></i>进入组合 <i class="marker-legend sell"></i>退出组合</span>
+                  </div>
+                  <svg id="securityChart" class="security-chart" viewBox="0 0 900 380" role="img" aria-label="个股复权K线及买卖点"></svg>
+                  <p id="securityChartNote" class="chart-note">展示所选日期之前最近120个交易日，红色上涨、绿色下跌。</p>
+                </div>
+              </div>
             </div>
           </article>
         </section>

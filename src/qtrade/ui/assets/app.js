@@ -7,6 +7,9 @@ const state = {
   selectedPartition: null,
   backtestTimer: null,
   positions: [],
+  dailyPositions: [],
+  securities: {},
+  currentExperimentId: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -492,14 +495,125 @@ function renderPositionHistory(positions) {
   renderPosition();
 }
 
+function renderDailyPosition(positionIndex = null) {
+  const history = state.dailyPositions || [];
+  if (!history.length) {
+    $("dailyPositionSummary").textContent = "该回测没有可展示的每日持仓。";
+    $("dailyPositionRows").innerHTML = "";
+    return;
+  }
+  const index = positionIndex == null
+    ? history.length - 1
+    : Math.max(0, Math.min(history.length - 1, Number(positionIndex)));
+  const position = history[index];
+  $("dailyPositionDate").value = String(index);
+  $("dailyPositionSummary").innerHTML = `
+    <span>交易日：<strong>${escapeHtml(position.trade_date)}</strong></span>
+    <span>当日收盘持仓：<strong>${escapeHtml(position.codes?.length || 0)} 只</strong></span>
+    <span>持仓由实际调仓与涨跌停延迟执行记录逐日重建</span>`;
+  $("dailyPositionRows").innerHTML = (position.codes || []).map((code) => {
+    const security = state.securities[code] || {};
+    return `<tr data-code="${escapeHtml(code)}">
+      <td><strong>${escapeHtml(code)}</strong></td>
+      <td>${escapeHtml(security.name || "名称缺失")}</td>
+      <td>${escapeHtml(security.industry || "行业缺失")}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="3" class="empty-inline">该日组合尚未建仓</td></tr>`;
+  document.querySelectorAll("#dailyPositionRows tr[data-code]").forEach((row) => {
+    row.addEventListener("click", () => loadSecurityChart(row.dataset.code));
+  });
+  const selectedCode = document.querySelector("#dailyPositionRows tr[data-code]")?.dataset.code;
+  if (selectedCode) loadSecurityChart(selectedCode);
+}
+
+function renderDailyPositionHistory(history, securities) {
+  state.dailyPositions = history || [];
+  state.securities = securities || {};
+  $("dailyPositionDate").innerHTML = state.dailyPositions.length
+    ? state.dailyPositions.map((item, index) =>
+      `<option value="${index}">${escapeHtml(item.trade_date)} · ${escapeHtml(item.codes?.length || 0)} 只</option>`
+    ).join("")
+    : `<option value="">暂无每日持仓</option>`;
+  renderDailyPosition();
+}
+
+function renderSecurityChart(value, selectedDate) {
+  const allBars = value.bars || [];
+  const bars = allBars.filter((item) => item.trade_date <= selectedDate).slice(-120);
+  const svg = $("securityChart");
+  $("securityChartTitle").textContent = `${value.name || value.ts_code} · ${value.ts_code}`;
+  document.querySelectorAll("#dailyPositionRows tr").forEach(
+    (row) => row.classList.toggle("selected", row.dataset.code === value.ts_code)
+  );
+  if (!bars.length) {
+    svg.innerHTML = `<text x="450" y="190" text-anchor="middle" class="chart-label">所选日期之前没有行情</text>`;
+    return;
+  }
+  const high = Math.max(...bars.map((item) => Number(item.high)));
+  const low = Math.min(...bars.map((item) => Number(item.low)));
+  const span = Math.max(high - low, .01);
+  const x = (index) => 48 + index * 814 / Math.max(bars.length - 1, 1);
+  const y = (price) => 24 + (high - Number(price)) * 286 / span;
+  const candleWidth = Math.max(2, Math.min(6, 650 / bars.length));
+  const candles = bars.map((item, index) => {
+    const cx = x(index);
+    const openY = y(item.open);
+    const closeY = y(item.close);
+    const className = Number(item.close) >= Number(item.open) ? "candle-up" : "candle-down";
+    return `<line x1="${cx}" y1="${y(item.high)}" x2="${cx}" y2="${y(item.low)}" class="candle-wick ${className}"/>
+      <rect x="${cx - candleWidth / 2}" y="${Math.min(openY, closeY)}" width="${candleWidth}" height="${Math.max(1, Math.abs(closeY - openY))}" class="${className}"/>`;
+  }).join("");
+  const indexByDate = new Map(bars.map((item, index) => [item.trade_date, index]));
+  const markers = (value.markers || []).filter((item) => indexByDate.has(item.trade_date)).map((item) => {
+    const index = indexByDate.get(item.trade_date);
+    const bar = bars[index];
+    const cx = x(index);
+    if (item.side === "buy") {
+      const cy = Math.min(344, y(bar.low) + 13);
+      return `<path d="M ${cx} ${cy - 9} L ${cx - 6} ${cy + 2} L ${cx + 6} ${cy + 2} Z" class="trade-marker-buy"/>
+        <text x="${cx}" y="${cy + 13}" text-anchor="middle" class="trade-marker-label trade-marker-buy">买</text>`;
+    }
+    const cy = Math.max(12, y(bar.high) - 13);
+    return `<path d="M ${cx} ${cy + 9} L ${cx - 6} ${cy - 2} L ${cx + 6} ${cy - 2} Z" class="trade-marker-sell"/>
+      <text x="${cx}" y="${cy - 6}" text-anchor="middle" class="trade-marker-label trade-marker-sell">卖</text>`;
+  }).join("");
+  svg.innerHTML = `
+    <line x1="48" y1="24" x2="48" y2="310" class="chart-grid"/>
+    <line x1="48" y1="310" x2="862" y2="310" class="chart-grid"/>
+    <line x1="48" y1="167" x2="862" y2="167" class="chart-grid"/>
+    ${candles}${markers}
+    <text x="42" y="28" text-anchor="end" class="chart-label">${high.toFixed(2)}</text>
+    <text x="42" y="313" text-anchor="end" class="chart-label">${low.toFixed(2)}</text>
+    <text x="48" y="332" class="chart-label">${escapeHtml(bars[0].trade_date)}</text>
+    <text x="862" y="332" text-anchor="end" class="chart-label">${escapeHtml(bars[bars.length - 1].trade_date)}</text>`;
+  $("securityChartNote").textContent =
+    `前复权K线（归一到回测结束日），展示 ${bars[0].trade_date} 至 ${bars[bars.length - 1].trade_date}；买卖点表示进入或完全退出组合。`;
+}
+
+async function loadSecurityChart(tsCode) {
+  if (!state.currentExperimentId || !tsCode) return;
+  const selected = state.dailyPositions[Number($("dailyPositionDate").value)];
+  if (!selected) return;
+  try {
+    const value = await api(
+      `/api/backtest/security?id=${encodeURIComponent(state.currentExperimentId)}&code=${encodeURIComponent(tsCode)}`
+    );
+    renderSecurityChart(value, selected.trade_date);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
 async function loadBacktestResult(experimentId) {
   if (!experimentId) {
+    state.currentExperimentId = null;
     $("backtestEmpty").classList.remove("hidden");
     $("backtestResultContent").classList.add("hidden");
     return;
   }
   try {
     const result = await api(`/api/backtest/result?id=${encodeURIComponent(experimentId)}`);
+    state.currentExperimentId = experimentId;
     const summary = result.summary;
     $("backtestEmpty").classList.add("hidden");
     $("backtestResultContent").classList.remove("hidden");
@@ -513,6 +627,7 @@ async function loadBacktestResult(experimentId) {
     $("btCosts").textContent = `累计成本 ${num(summary.total_cost, 0)}`;
     renderEquityChart(result.curve || []);
     renderPositionHistory(result.positions || []);
+    renderDailyPositionHistory(result.daily_positions || [], result.securities || {});
     $("backtestAudit").innerHTML = `
       <strong>${summary.protocol_id ? "正式验证回测" : "探索性回测"}</strong> ·
       ${escapeHtml(summary.start_date)} 至 ${escapeHtml(summary.end_date)} ·
@@ -655,6 +770,7 @@ function bindEvents() {
   $("toggleBacktestLog").addEventListener("click", () => $("backtestLog").classList.toggle("hidden"));
   $("backtestResultSelect").addEventListener("change", (event) => loadBacktestResult(event.target.value));
   $("positionDateSelect").addEventListener("change", (event) => renderPosition(event.target.value));
+  $("dailyPositionDate").addEventListener("change", (event) => renderDailyPosition(event.target.value));
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => {
       document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active"));

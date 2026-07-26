@@ -44,6 +44,8 @@ class UiApplication:
         self.backtests = BacktestRepository(
             config.paths.runtime,
             config.paths.reports,
+            config.paths.curated,
+            config.provider.name,
         )
         self.backtest_tasks = BacktestTaskManager(
             SubprocessBacktestRunner(
@@ -93,6 +95,20 @@ def make_handler(application: UiApplication) -> type[BaseHTTPRequestHandler]:
                     experiment_id = parse_qs(parsed.query).get("id", [""])[0]
                     self._json(application.backtests.result(experiment_id))
                 except (FileNotFoundError, ValueError) as exc:
+                    self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            if parsed.path == "/api/backtest/security":
+                try:
+                    query = parse_qs(parsed.query)
+                    experiment_id = query.get("id", [""])[0]
+                    ts_code = query.get("code", [""])[0].upper()
+                    self._json(
+                        application.backtests.security_chart(
+                            experiment_id,
+                            ts_code,
+                        )
+                    )
+                except (FileNotFoundError, RuntimeError, ValueError) as exc:
                     self._error(HTTPStatus.BAD_REQUEST, str(exc))
                 return
             if parsed.path == "/api/overview":

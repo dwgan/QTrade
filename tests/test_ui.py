@@ -1,13 +1,15 @@
 import json
 import subprocess
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import polars as pl
 import pytest
 
+from qtrade.data.storage import ParquetDatasetStore
+from qtrade.domain import DataBatch, Dataset
 from qtrade.research.protocols import ExperimentRecord, ExperimentStore
 from qtrade.ui.application import (
     BacktestRepository,
@@ -139,8 +141,8 @@ def test_backtest_repository_loads_summary_and_downsampled_curve(
     pl.DataFrame(
         {
             "trade_date": [
-                date(2020, 1, 1).isoformat()
-                for _ in range(400)
+                (date(2020, 1, 1) + timedelta(days=index)).isoformat()
+                for index in range(400)
             ],
             "equity": list(range(400)),
             "benchmark_equity": list(range(400)),
@@ -196,6 +198,109 @@ def test_backtest_repository_loads_summary_and_downsampled_curve(
     } == {"000003.SZ"}
     assert result["positions"][1]["removed"] == [
         {"ts_code": "000001.SZ", "name": None}
+    ]
+    daily_by_date = {
+        item["trade_date"]: item["codes"] for item in result["daily_positions"]
+    }
+    assert daily_by_date["2020-02-03"] == ["000001.SZ", "000002.SZ"]
+    assert daily_by_date["2020-03-02"] == ["000002.SZ", "000003.SZ"]
+
+
+def test_backtest_repository_loads_adjusted_security_chart_and_markers(
+    tmp_path: Path,
+) -> None:
+    reports = tmp_path / "reports"
+    result_dir = reports / "research/backtests/quality_v1/experiment"
+    result_dir.mkdir(parents=True)
+    summary = result_dir / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "protocol_id": "quality_v1",
+                "start_date": "2020-02-03",
+                "end_date": "2020-03-02",
+                "signal_versions": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    pl.DataFrame(
+        {
+            "signal_date": [date(2020, 1, 31), date(2020, 2, 28)],
+            "execution_date": [date(2020, 2, 3), date(2020, 3, 2)],
+            "holding_codes": [["000001.SZ"], []],
+        }
+    ).write_parquet(result_dir / "rebalances.parquet")
+    runtime = tmp_path / "runtime"
+    experiments = ExperimentStore(runtime)
+    record = experiments.create(
+        ExperimentRecord(
+            protocol_id="quality_v1",
+            kind="candidate_backtest",
+            start_date=date(2020, 2, 3),
+            end_date=date(2020, 3, 2),
+            code_commit="abc",
+            config_hash="def",
+        )
+    )
+    experiments.complete(
+        record.experiment_id,
+        data_version="1" * 64,
+        result_json=summary,
+        result_markdown=result_dir / "summary.md",
+    )
+    curated_root = tmp_path / "curated"
+    store = ParquetDatasetStore(curated_root, "curated")
+    for trade_date, prices, factor in (
+        (date(2020, 2, 3), (10.0, 11.0, 9.0, 10.5), 1.0),
+        (date(2020, 3, 2), (20.0, 22.0, 19.0, 21.0), 2.0),
+    ):
+        store.write(
+            DataBatch(
+                Dataset.DAILY_PRICES,
+                "fake",
+                trade_date,
+                pl.DataFrame(
+                    {
+                        "ts_code": ["000001.SZ"],
+                        "trade_date": [trade_date],
+                        "open": [prices[0]],
+                        "high": [prices[1]],
+                        "low": [prices[2]],
+                        "close": [prices[3]],
+                        "vol": [1000.0],
+                    }
+                ),
+            )
+        )
+        store.write(
+            DataBatch(
+                Dataset.ADJUST_FACTORS,
+                "fake",
+                trade_date,
+                pl.DataFrame(
+                    {
+                        "ts_code": ["000001.SZ"],
+                        "trade_date": [trade_date],
+                        "adj_factor": [factor],
+                    }
+                ),
+            )
+        )
+
+    chart = BacktestRepository(
+        runtime,
+        reports,
+        curated_root,
+        "fake",
+    ).security_chart(record.experiment_id, "000001.SZ")
+
+    assert chart["price_mode"] == "forward_adjusted_to_backtest_end"
+    assert chart["bars"][0]["open"] == 5.0
+    assert chart["bars"][1]["close"] == 21.0
+    assert chart["markers"] == [
+        {"trade_date": "2020-02-03", "side": "buy"},
+        {"trade_date": "2020-03-02", "side": "sell"},
     ]
 
 
