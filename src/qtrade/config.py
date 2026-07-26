@@ -38,6 +38,8 @@ class ProviderConfig(BaseModel):
     api_url_env: str = "TUSHARE_API_URL"
     request_pause_seconds: float = Field(default=0.2, ge=0)
     retry_attempts: int = Field(default=3, ge=1, le=10)
+    parallel_requests: int = Field(default=3, ge=1, le=5)
+    backfill_parallel_dates: int = Field(default=2, ge=1, le=2)
 
     def token(self) -> str:
         value = os.getenv(self.token_env, "").strip()

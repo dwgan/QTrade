@@ -61,6 +61,8 @@ def build_service(config: AppConfig) -> DataIngestionService:
         validator=DataValidator(config.validation),
         snapshots_root=config.paths.snapshots,
         reports_root=config.paths.reports,
+        parallel_requests=config.provider.parallel_requests,
+        backfill_parallel_dates=config.provider.backfill_parallel_dates,
     )
 
 

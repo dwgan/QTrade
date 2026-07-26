@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -98,6 +99,8 @@ class DataIngestionService:
         validator: DataValidator,
         snapshots_root: Path,
         reports_root: Path,
+        parallel_requests: int = 1,
+        backfill_parallel_dates: int = 1,
     ) -> None:
         self.provider = provider
         self.raw_store = raw_store
@@ -105,59 +108,81 @@ class DataIngestionService:
         self.validator = validator
         self.snapshots_root = Path(snapshots_root)
         self.reports_root = Path(reports_root)
+        self.parallel_requests = parallel_requests
+        self.backfill_parallel_dates = backfill_parallel_dates
 
     def update(self, as_of_date: date, datasets: list[Dataset]) -> UpdateResult:
         result = UpdateResult(as_of_date=as_of_date)
 
-        for dataset in datasets:
-            try:
-                raw_batch = self.provider.fetch(dataset, FetchRequest(as_of_date=as_of_date))
-                raw_path = self.raw_store.write(raw_batch)
-
-                curated_frame = normalize_dataset(dataset, raw_batch.frame, as_of_date)
-                curated_batch = DataBatch(
-                    dataset=dataset,
-                    provider=raw_batch.provider,
-                    as_of_date=as_of_date,
-                    frame=curated_frame,
-                    fetched_at=raw_batch.fetched_at,
-                    request={**raw_batch.request, "normalized": True},
-                )
-                curated_path = self.curated_store.write(curated_batch)
-                report = self.validator.validate(dataset, as_of_date, curated_frame)
-
-                result.datasets.append(
-                    DatasetUpdate(
-                        dataset=dataset,
-                        status="completed",
-                        row_count=curated_frame.height,
-                        raw_path=str(raw_path),
-                        curated_path=str(curated_path),
+        workers = min(self.parallel_requests, len(datasets))
+        if workers <= 1:
+            completed = [
+                self._update_dataset(as_of_date, dataset) for dataset in datasets
+            ]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                completed = list(
+                    executor.map(
+                        lambda dataset: self._update_dataset(as_of_date, dataset),
+                        datasets,
                     )
                 )
-                result.reports.append(report)
-            except Exception as exc:
-                result.datasets.append(
-                    DatasetUpdate(dataset=dataset, status="failed", error=str(exc))
-                )
-                result.reports.append(
-                    ValidationReport(
-                        dataset=dataset,
-                        as_of_date=as_of_date,
-                        row_count=0,
-                        issues=[
-                            ValidationIssue(
-                                Severity.ERROR,
-                                "ingestion_failed",
-                                f"Dataset update failed: {exc}",
-                            )
-                        ],
-                    )
-                )
+        for update, report in completed:
+            result.datasets.append(update)
+            result.reports.append(report)
 
         write_validation_reports(self.reports_root, as_of_date, result.reports)
         self._write_manifest(result)
         return result
+
+    def _update_dataset(
+        self,
+        as_of_date: date,
+        dataset: Dataset,
+    ) -> tuple[DatasetUpdate, ValidationReport]:
+        try:
+            raw_batch = self.provider.fetch(
+                dataset,
+                FetchRequest(as_of_date=as_of_date),
+            )
+            raw_path = self.raw_store.write(raw_batch)
+            curated_frame = normalize_dataset(dataset, raw_batch.frame, as_of_date)
+            curated_batch = DataBatch(
+                dataset=dataset,
+                provider=raw_batch.provider,
+                as_of_date=as_of_date,
+                frame=curated_frame,
+                fetched_at=raw_batch.fetched_at,
+                request={**raw_batch.request, "normalized": True},
+            )
+            curated_path = self.curated_store.write(curated_batch)
+            report = self.validator.validate(dataset, as_of_date, curated_frame)
+            return (
+                DatasetUpdate(
+                    dataset=dataset,
+                    status="completed",
+                    row_count=curated_frame.height,
+                    raw_path=str(raw_path),
+                    curated_path=str(curated_path),
+                ),
+                report,
+            )
+        except Exception as exc:
+            return (
+                DatasetUpdate(dataset=dataset, status="failed", error=str(exc)),
+                ValidationReport(
+                    dataset=dataset,
+                    as_of_date=as_of_date,
+                    row_count=0,
+                    issues=[
+                        ValidationIssue(
+                            Severity.ERROR,
+                            "ingestion_failed",
+                            f"Dataset update failed: {exc}",
+                        )
+                    ],
+                ),
+            )
 
     def backfill(
         self,
@@ -209,6 +234,7 @@ class DataIngestionService:
         )
         daily_datasets = [dataset for dataset in datasets if dataset != Dataset.TRADE_CALENDAR]
         result = BackfillResult(start_date, end_date, trading_dates=len(open_dates))
+        work: list[tuple[int, date, list[Dataset]]] = []
         for position, trading_date in enumerate(open_dates, start=1):
             pending = [
                 dataset
@@ -224,6 +250,10 @@ class DataIngestionService:
                     trading_date,
                 )
                 continue
+            work.append((position, trading_date, pending))
+
+        def update_date(item: tuple[int, date, list[Dataset]]):
+            position, trading_date, pending = item
             LOGGER.info(
                 "Backfill %s/%s updating %s (%s)",
                 position,
@@ -231,7 +261,15 @@ class DataIngestionService:
                 trading_date,
                 ", ".join(dataset.value for dataset in pending),
             )
-            update_result = self.update(trading_date, pending)
+            return trading_date, self.update(trading_date, pending)
+
+        workers = min(self.backfill_parallel_dates, len(work))
+        if workers <= 1:
+            completed = [update_date(item) for item in work]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                completed = list(executor.map(update_date, work))
+        for trading_date, update_result in completed:
             if update_result.succeeded:
                 result.completed_dates += 1
             else:
