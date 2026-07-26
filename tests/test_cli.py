@@ -72,6 +72,22 @@ def test_daily_observation_command_parses() -> None:
     assert args.date == date(2026, 7, 24)
 
 
+def test_daily_pipeline_command_parses() -> None:
+    args = build_parser().parse_args(
+        ["pipeline", "daily", "--date", "2026-07-24", "--skip-data"]
+    )
+
+    assert args.pipeline_command == "daily"
+    assert args.skip_data is True
+
+
+def test_dashboard_build_command_parses() -> None:
+    args = build_parser().parse_args(["dashboard", "build", "--date", "2026-07-24"])
+
+    assert args.dashboard_command == "build"
+    assert args.date == date(2026, 7, 24)
+
+
 def test_financial_snapshot_command_parses() -> None:
     args = build_parser().parse_args(
         [

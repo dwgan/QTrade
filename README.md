@@ -116,6 +116,27 @@ qtrade observe daily --date 2026-07-24
 结果写入 `reports/observations/YYYY-MM-DD`，详细说明见
 [每日观察与影子组合](./docs/12-每日观察与影子组合.md)。
 
+收盘后可以通过一条命令更新数据并生成全部分析、观察报告和本地看板：
+
+```powershell
+qtrade pipeline daily --date 2026-07-24
+```
+
+使用已有数据重跑：
+
+```powershell
+qtrade pipeline daily --date 2026-07-24 --skip-data
+```
+
+只重新生成静态看板：
+
+```powershell
+qtrade dashboard build --date 2026-07-24
+```
+
+详细运行和失败语义见
+[日度流水线与本地看板](./docs/13-日度流水线与本地看板.md)。
+
 ## 数据位置
 
 默认配置位于 `config/base.yaml`：

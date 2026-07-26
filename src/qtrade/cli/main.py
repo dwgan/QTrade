@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from qtrade.config import AppConfig, load_config
+from qtrade.dashboard.builder import DashboardBuilder
 from qtrade.data.providers.tushare import TushareProvider
 from qtrade.data.service import DataIngestionService
 from qtrade.data.storage import ParquetDatasetStore
@@ -16,6 +17,7 @@ from qtrade.factors.service import FactorAnalysisService
 from qtrade.industry.service import IndustryAnalysisService
 from qtrade.market.service import MarketAnalysisService
 from qtrade.observation.service import ObservationService
+from qtrade.pipeline.service import DailyPipelineService
 from qtrade.research.service import ResearchService
 
 
@@ -103,6 +105,24 @@ def build_observation_service(config: AppConfig) -> ObservationService:
     )
 
 
+def build_pipeline_service(
+    config: AppConfig,
+    data_service: DataIngestionService | None,
+    data_service_error: str | None = None,
+) -> DailyPipelineService:
+    config.paths.create()
+    return DailyPipelineService(
+        data_service=data_service,
+        market_service=build_market_service(config),
+        industry_service=build_industry_service(config),
+        factor_service=build_factor_service(config),
+        observation_service=build_observation_service(config),
+        dashboard_builder=DashboardBuilder(config.paths.reports),
+        reports_root=config.paths.reports,
+        data_service_error=data_service_error,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qtrade", description="QTrade research toolkit")
     parser.add_argument("--config", default="config/base.yaml", help="YAML configuration path")
@@ -183,6 +203,28 @@ def build_parser() -> argparse.ArgumentParser:
         "daily", help="Generate candidate, watchlist, and shadow portfolio report"
     )
     daily_observation.add_argument("--date", required=True, type=parse_date)
+
+    pipeline = commands.add_parser("pipeline", help="End-of-day workflow")
+    pipeline_commands = pipeline.add_subparsers(dest="pipeline_command", required=True)
+    daily_pipeline = pipeline_commands.add_parser(
+        "daily", help="Run data, analysis, observation, and dashboard steps"
+    )
+    daily_pipeline.add_argument("--date", required=True, type=parse_date)
+    daily_pipeline.add_argument("--datasets", help="Comma-separated dataset names")
+    daily_pipeline.add_argument(
+        "--skip-data",
+        action="store_true",
+        help="Use existing curated data without contacting the provider",
+    )
+
+    dashboard = commands.add_parser("dashboard", help="Local read-only dashboard")
+    dashboard_commands = dashboard.add_subparsers(
+        dest="dashboard_command", required=True
+    )
+    dashboard_build = dashboard_commands.add_parser(
+        "build", help="Build dashboard from existing reports"
+    )
+    dashboard_build.add_argument("--date", required=True, type=parse_date)
     return parser
 
 
@@ -210,6 +252,42 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     config = load_config(Path(args.config))
+    if args.command == "dashboard":
+        try:
+            path = DashboardBuilder(config.paths.reports).build(args.date)
+            print(f"Dashboard: {path}")
+            return 0
+        except (OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.command == "pipeline":
+        try:
+            datasets = parse_datasets(args.datasets, config.update.datasets)
+            data_service = None
+            data_service_error = None
+            if not args.skip_data:
+                try:
+                    data_service = build_service(config)
+                except RuntimeError as exc:
+                    data_service_error = str(exc)
+            result = build_pipeline_service(
+                config,
+                data_service,
+                data_service_error,
+            ).run(
+                args.date,
+                datasets,
+                skip_data=args.skip_data,
+            )
+            for step in result.run.steps:
+                print(f"[{step.status.value.upper()}] {step.name}: {step.message}")
+            print(f"Pipeline report: {result.markdown_path}")
+            return 0 if result.run.status == "success" else 1
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
     if args.command == "observe":
         try:
             result = build_observation_service(config).run(args.date)
