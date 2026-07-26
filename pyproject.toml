@@ -29,6 +29,9 @@ qtrade = "qtrade.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"qtrade.ui" = ["assets/*.html", "assets/*.css", "assets/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
@@ -39,4 +42,3 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-

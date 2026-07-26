@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="QTrade A股收盘研究工作台">
+  <title>QTrade · A股研究工作台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23102a43'/%3E%3Ctext x='32' y='43' text-anchor='middle' font-family='Georgia' font-size='38' fill='%23ead9b7'%3EQ%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="QTrade 首页">
+        <span class="brand-mark">Q</span>
+        <span><strong>QTrade</strong><small>收盘研究工作台</small></span>
+      </a>
+
+      <nav class="nav" aria-label="页面导航">
+        <button class="nav-item active" data-scroll="overview">
+          <span class="nav-icon">⌁</span> 今日决策
+        </button>
+        <button class="nav-item" data-scroll="industries">
+          <span class="nav-icon">▦</span> 行业强弱
+        </button>
+        <button class="nav-item" data-scroll="candidates">
+          <span class="nav-icon">◎</span> 候选股票
+        </button>
+        <button class="nav-item" data-scroll="watchlist">
+          <span class="nav-icon">☆</span> 我的自选
+        </button>
+        <button class="nav-item" data-scroll="pipeline">
+          <span class="nav-icon">↻</span> 运行记录
+        </button>
+      </nav>
+
+      <div class="side-status">
+        <div class="status-row">
+          <span>数据源</span><strong id="providerName">—</strong>
+        </div>
+        <div class="status-row">
+          <span>访问凭据</span><strong id="tokenState" class="dot-state">检查中</strong>
+        </div>
+        <div class="status-row">
+          <span>API 地址</span><strong id="apiState">—</strong>
+        </div>
+      </div>
+      <p class="side-note">仅在本机运行，不连接券商，不执行交易。</p>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">A-SHARE RESEARCH DESK</p>
+          <h1>今天应该关注什么？</h1>
+          <p class="subtitle">先看风险，再看行业，最后研究个股。</p>
+        </div>
+        <div class="date-control">
+          <label for="tradeDate">分析日期</label>
+          <div class="date-line">
+            <select id="historyDate" aria-label="已有报告日期"></select>
+            <input id="tradeDate" type="date" aria-label="运行日期">
+          </div>
+        </div>
+      </header>
+
+      <section class="run-panel" aria-labelledby="runTitle">
+        <div class="run-copy">
+          <span class="section-kicker">收盘后运行</span>
+          <h2 id="runTitle">生成今天的完整研究报告</h2>
+          <p>联网更新会拉取当天数据；本地重算适合调整自选股或重新生成报告。</p>
+        </div>
+        <div class="run-actions">
+          <button id="runExisting" class="button secondary">使用已有数据重算</button>
+          <button id="runUpdate" class="button primary">
+            <span class="button-pulse"></span> 更新数据并分析
+          </button>
+        </div>
+        <div id="taskBanner" class="task-banner hidden" role="status">
+          <div class="task-spinner"></div>
+          <div>
+            <strong id="taskTitle">任务运行中</strong>
+            <p id="taskDetail">正在准备...</p>
+          </div>
+          <button id="toggleLog" class="text-button">查看日志</button>
+        </div>
+        <pre id="taskLog" class="task-log hidden"></pre>
+      </section>
+
+      <section id="emptyState" class="empty-state hidden">
+        <span class="empty-orbit"></span>
+        <h2>这个日期还没有报告</h2>
+        <p>选择“更新数据并分析”，系统会完成数据更新、市场分析、行业排名和候选筛选。</p>
+      </section>
+
+      <div id="dashboardContent">
+        <section id="overview" class="hero-grid">
+          <article id="riskCard" class="risk-card">
+            <div class="risk-heading">
+              <div>
+                <span class="section-kicker light">市场风险温度</span>
+                <h2 id="marketState">—</h2>
+              </div>
+              <span id="confidencePill" class="confidence-pill">—</span>
+            </div>
+            <div class="thermometer">
+              <div class="temperature-value"><strong id="temperature">—</strong><span>/ 100</span></div>
+              <div class="temperature-track"><i id="temperatureBar"></i></div>
+              <div class="temperature-labels"><span>防守</span><span>均衡</span><span>进攻</span></div>
+            </div>
+            <p id="marketAdvice" class="risk-advice">等待报告数据。</p>
+            <div class="risk-meta">
+              <span>历史区间 <strong id="historyRange">—</strong></span>
+              <span>有效股票 <strong id="eligibleStocks">—</strong></span>
+            </div>
+          </article>
+
+          <article class="breadth-card">
+            <div class="card-head">
+              <div><span class="section-kicker">市场宽度</span><h2>多数股票的真实状态</h2></div>
+            </div>
+            <div class="breadth-list">
+              <div class="breadth-item">
+                <div><span>站上 20 日均线</span><strong id="above20">—</strong></div>
+                <div class="mini-track"><i id="above20Bar"></i></div>
+              </div>
+              <div class="breadth-item">
+                <div><span>站上 60 日均线</span><strong id="above60">—</strong></div>
+                <div class="mini-track"><i id="above60Bar"></i></div>
+              </div>
+              <div class="breadth-item">
+                <div><span>当日上涨比例</span><strong id="advanceRatio">—</strong></div>
+                <div class="mini-track"><i id="advanceBar"></i></div>
+              </div>
+              <div class="breadth-item danger">
+                <div><span>创 60 日新低</span><strong id="newLow">—</strong></div>
+                <div class="mini-track"><i id="newLowBar"></i></div>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <section class="metric-strip">
+          <article><span>趋势得分</span><strong id="trendScore">—</strong><small>指数趋势</small></article>
+          <article><span>宽度得分</span><strong id="breadthScore">—</strong><small>个股参与度</small></article>
+          <article><span>风险健康度</span><strong id="healthScore">—</strong><small>波动与回撤</small></article>
+          <article><span>候选数量</span><strong id="candidateCount">—</strong><small>进一步研究</small></article>
+        </section>
+
+        <section id="industries" class="content-card">
+          <div class="card-head">
+            <div>
+              <span class="section-kicker">SECTOR MAP</span>
+              <h2>行业相对强弱</h2>
+              <p>排名高不等于追涨，结合“状态”和行业内部扩散度判断。</p>
+            </div>
+            <span id="industryConfidence" class="outline-pill">—</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>排名</th><th>行业</th><th>状态</th>
+                <th class="number">综合得分</th><th class="number">20日超额</th>
+                <th class="number">60日均线上方</th>
+              </tr></thead>
+              <tbody id="industryRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="candidates" class="content-card">
+          <div class="card-head candidate-head">
+            <div>
+              <span class="section-kicker">RESEARCH SHORTLIST</span>
+              <h2>多因子候选股票</h2>
+              <p>从全市场缩小研究范围；点击一行查看入选理由。</p>
+            </div>
+            <div class="filter-control">
+              <input id="candidateSearch" type="search" placeholder="搜索代码、名称或行业">
+              <select id="candidateLimit" aria-label="显示候选数量">
+                <option value="10">前 10</option>
+                <option value="20" selected>前 20</option>
+                <option value="30">前 30</option>
+              </select>
+            </div>
+          </div>
+          <div class="candidate-layout">
+            <div class="table-wrap">
+              <table class="candidate-table">
+                <thead><tr>
+                  <th>排名</th><th>股票</th><th>行业</th>
+                  <th class="number">综合</th><th class="number">质量</th>
+                  <th class="number">价值</th><th class="number">动量</th>
+                  <th class="number">低风险</th>
+                </tr></thead>
+                <tbody id="candidateRows"></tbody>
+              </table>
+            </div>
+            <aside id="candidateDetail" class="candidate-detail">
+              <span class="detail-rank">选择候选股</span>
+              <h3>查看评分解释</h3>
+              <p>候选仅用于缩小研究范围，操作前仍需核查公告与价格位置。</p>
+            </aside>
+          </div>
+          <div id="filterStats" class="filter-stats"></div>
+        </section>
+
+        <section id="watchlist" class="split-grid">
+          <article class="content-card no-margin">
+            <div class="card-head">
+              <div><span class="section-kicker">MY WATCHLIST</span><h2>我的自选股</h2></div>
+            </div>
+            <div id="watchlistResults" class="watchlist-results"></div>
+          </article>
+          <article class="content-card no-margin watchlist-editor">
+            <span class="section-kicker">编辑自选</span>
+            <h2>让系统每天帮你跟踪</h2>
+            <p>每行一个 Tushare 股票代码，例如 <code>600519.SH</code>。</p>
+            <textarea id="watchlistInput" rows="7" placeholder="600519.SH&#10;000858.SZ"></textarea>
+            <div class="editor-footer">
+              <span id="watchlistMessage"></span>
+              <button id="saveWatchlist" class="button secondary">保存自选股</button>
+            </div>
+          </article>
+        </section>
+
+        <section id="pipeline" class="content-card">
+          <div class="card-head">
+            <div><span class="section-kicker">SYSTEM CHECK</span><h2>本次运行记录</h2></div>
+            <span id="pipelineStatus" class="outline-pill">—</span>
+          </div>
+          <div id="pipelineSteps" class="step-grid"></div>
+          <div id="qualitySummary" class="quality-summary"></div>
+        </section>
+      </div>
+
+      <footer>
+        <p>QTrade 是个人研究与风险观察工具，不构成投资建议，不连接券商执行交易。</p>
+      </footer>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

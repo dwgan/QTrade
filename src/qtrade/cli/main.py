@@ -235,6 +235,15 @@ def build_parser() -> argparse.ArgumentParser:
         "build", help="Build dashboard from existing reports"
     )
     dashboard_build.add_argument("--date", required=True, type=parse_date)
+
+    ui = commands.add_parser("ui", help="Launch the local interactive research interface")
+    ui.add_argument("--host", default="127.0.0.1", help="Local bind address")
+    ui.add_argument("--port", default=8765, type=int, help="Local HTTP port")
+    ui.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not open the default browser automatically",
+    )
     return parser
 
 
@@ -262,6 +271,25 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     config = load_config(Path(args.config))
+    if args.command == "ui":
+        if not 1 <= args.port <= 65535:
+            print("Error: port must be between 1 and 65535.", file=sys.stderr)
+            return 2
+        from qtrade.ui.server import serve_ui
+
+        try:
+            serve_ui(
+                config=config,
+                config_path=Path(args.config),
+                host=args.host,
+                port=args.port,
+                open_browser=not args.no_browser,
+            )
+            return 0
+        except OSError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
     if args.command == "dashboard":
         try:
             path = DashboardBuilder(config.paths.reports).build(args.date)

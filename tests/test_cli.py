@@ -88,6 +88,15 @@ def test_dashboard_build_command_parses() -> None:
     assert args.date == date(2026, 7, 24)
 
 
+def test_ui_command_parses() -> None:
+    args = build_parser().parse_args(["ui", "--port", "9000", "--no-browser"])
+
+    assert args.command == "ui"
+    assert args.host == "127.0.0.1"
+    assert args.port == 9000
+    assert args.no_browser is True
+
+
 def test_financial_snapshot_command_parses() -> None:
     args = build_parser().parse_args(
         [
