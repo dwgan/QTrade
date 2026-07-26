@@ -313,6 +313,21 @@
               <div class="chart-head"><strong>权益曲线</strong><span><i class="legend portfolio"></i>组合 <i class="legend benchmark"></i>基准</span></div>
               <svg id="equityChart" class="equity-chart" viewBox="0 0 900 280" role="img" aria-label="组合和基准权益曲线"></svg>
               <div id="backtestAudit" class="backtest-audit"></div>
+              <div class="position-head">
+                <div>
+                  <strong>月度持仓与调仓明细</strong>
+                  <span>查看每次信号最终持有哪些股票，以及相对上期新增和卖出的股票。</span>
+                </div>
+                <select id="positionDateSelect" aria-label="选择调仓日期"></select>
+              </div>
+              <div id="positionSummary" class="position-summary"></div>
+              <div class="table-wrap">
+                <table class="position-table">
+                  <thead><tr><th>变化</th><th>股票</th><th>名称</th><th>行业</th></tr></thead>
+                  <tbody id="positionRows"></tbody>
+                </table>
+              </div>
+              <div id="removedPositions" class="removed-positions"></div>
             </div>
           </article>
         </section>

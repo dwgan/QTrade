@@ -401,6 +401,7 @@ class BacktestRepository:
                 pl.col("trade_date").cast(pl.String)
             ).to_dicts()
         rebalances: list[dict[str, Any]] = []
+        positions: list[dict[str, Any]] = []
         if trades_path.is_file():
             trades = pl.read_parquet(trades_path)
             available = [
@@ -426,12 +427,132 @@ class BacktestRepository:
                 )
                 .to_dicts()
             )
+            positions = self._position_history(trades, summary)
         return {
             "experiment_id": experiment_id,
             "summary": summary,
             "curve": curve,
             "rebalances": rebalances,
+            "positions": positions,
         }
+
+    def _position_history(
+        self,
+        trades: pl.DataFrame,
+        summary: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        required = {"signal_date", "execution_date", "holding_codes"}
+        if required - set(trades.columns):
+            return []
+        names = self._signal_security_names(summary)
+        rows = (
+            trades.sort(["signal_date", "execution_date"])
+            .group_by("signal_date", maintain_order=True)
+            .agg(
+                pl.col("execution_date").first().alias("execution_start"),
+                pl.col("execution_date").last().alias("execution_end"),
+                pl.col("status").last(),
+                pl.col("holding_codes").last(),
+                pl.col("turnover").sum(),
+                pl.col("transaction_cost").sum(),
+                pl.col("slippage_cost").sum(),
+                pl.col("blocked_buys").sum(),
+                pl.col("blocked_sells").sum(),
+            )
+            .to_dicts()
+        )
+        previous: set[str] = set()
+        positions: list[dict[str, Any]] = []
+        for row in rows:
+            codes = [str(value) for value in (row["holding_codes"] or [])]
+            current = set(codes)
+            added = current - previous
+            removed = previous - current
+            signal_date = row["signal_date"]
+            positions.append(
+                {
+                    "signal_date": signal_date.isoformat(),
+                    "execution_start": row["execution_start"].isoformat(),
+                    "execution_end": row["execution_end"].isoformat(),
+                    "status": row["status"],
+                    "turnover": row["turnover"],
+                    "transaction_cost": row["transaction_cost"],
+                    "slippage_cost": row["slippage_cost"],
+                    "blocked_buys": row["blocked_buys"],
+                    "blocked_sells": row["blocked_sells"],
+                    "holdings": [
+                        {
+                            "ts_code": code,
+                            "name": names.get((signal_date.isoformat(), code), {}).get(
+                                "name"
+                            ),
+                            "industry": names.get(
+                                (signal_date.isoformat(), code),
+                                {},
+                            ).get("industry"),
+                            "change": "added" if code in added else "held",
+                        }
+                        for code in codes
+                    ],
+                    "removed": [
+                        {
+                            "ts_code": code,
+                            "name": self._latest_security_name(names, code),
+                        }
+                        for code in sorted(removed)
+                    ],
+                }
+            )
+            previous = current
+        return positions
+
+    def _signal_security_names(
+        self,
+        summary: dict[str, Any],
+    ) -> dict[tuple[str, str], dict[str, str | None]]:
+        values: dict[tuple[str, str], dict[str, str | None]] = {}
+        versions = summary.get("signal_versions", {})
+        if not isinstance(versions, dict):
+            return values
+        for signal_date, signal_id in versions.items():
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(signal_date)):
+                continue
+            if not re.fullmatch(r"[0-9a-f]{64}", str(signal_id)):
+                continue
+            path = (
+                self.reports_root
+                / "factors"
+                / str(signal_date)
+                / "versions"
+                / str(signal_id)
+                / "rankings.parquet"
+            )
+            if not path.is_file():
+                continue
+            frame = pl.read_parquet(path)
+            if "ts_code" not in frame.columns:
+                continue
+            columns = [
+                name for name in ("ts_code", "name", "industry") if name in frame.columns
+            ]
+            for item in frame.select(columns).to_dicts():
+                values[(str(signal_date), str(item["ts_code"]))] = {
+                    "name": item.get("name"),
+                    "industry": item.get("industry"),
+                }
+        return values
+
+    @staticmethod
+    def _latest_security_name(
+        names: dict[tuple[str, str], dict[str, str | None]],
+        code: str,
+    ) -> str | None:
+        matches = [
+            (signal_date, value.get("name"))
+            for (signal_date, ts_code), value in names.items()
+            if ts_code == code and value.get("name")
+        ]
+        return max(matches, default=("", None))[1]
 
 
 class SubprocessBacktestRunner:

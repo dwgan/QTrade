@@ -15,6 +15,16 @@ import polars as pl
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+RESEARCH_CODE_PATHS = (
+    "src/qtrade/factors",
+    "src/qtrade/research",
+    "src/qtrade/data",
+    "src/qtrade/config.py",
+    "src/qtrade/domain.py",
+    "config",
+    "pyproject.toml",
+)
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -34,7 +44,14 @@ def canonical_hash(payload: Any) -> str:
 def current_git_commit(project_root: Path) -> str:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            [
+                "git",
+                "log",
+                "-1",
+                "--format=%H",
+                "--",
+                *RESEARCH_CODE_PATHS,
+            ],
             cwd=project_root,
             check=True,
             capture_output=True,
@@ -55,9 +72,7 @@ def git_research_tree_is_clean(project_root: Path) -> bool:
                 "--porcelain",
                 "--untracked-files=normal",
                 "--",
-                "src",
-                "config",
-                "pyproject.toml",
+                *RESEARCH_CODE_PATHS,
             ],
             cwd=project_root,
             check=True,

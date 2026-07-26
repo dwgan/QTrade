@@ -146,6 +146,24 @@ def test_backtest_repository_loads_summary_and_downsampled_curve(
             "benchmark_equity": list(range(400)),
         }
     ).write_parquet(result_dir / "equity_curve.parquet")
+    pl.DataFrame(
+        {
+            "signal_date": [date(2020, 1, 31), date(2020, 2, 28)],
+            "execution_date": [date(2020, 2, 3), date(2020, 3, 2)],
+            "status": ["completed", "completed"],
+            "holdings": [2, 2],
+            "holding_codes": [
+                ["000001.SZ", "000002.SZ"],
+                ["000002.SZ", "000003.SZ"],
+            ],
+            "turnover": [1.0, 1.0],
+            "transaction_cost": [100.0, 100.0],
+            "slippage_cost": [30.0, 30.0],
+            "blocked_buys": [0, 0],
+            "blocked_sells": [0, 0],
+            "equity_after_cost": [999_870.0, 1_009_740.0],
+        }
+    ).write_parquet(result_dir / "rebalances.parquet")
     runtime = tmp_path / "runtime"
     experiments = ExperimentStore(runtime)
     record = experiments.create(
@@ -170,6 +188,15 @@ def test_backtest_repository_loads_summary_and_downsampled_curve(
     assert result["summary"]["portfolio"]["total_return"] == 0.2
     assert len(result["curve"]) == 320
     assert result["curve"][0]["trade_date"] == "2020-01-01"
+    assert len(result["positions"]) == 2
+    assert result["positions"][0]["holdings"][0]["change"] == "added"
+    assert {
+        item["ts_code"] for item in result["positions"][1]["holdings"]
+        if item["change"] == "added"
+    } == {"000003.SZ"}
+    assert result["positions"][1]["removed"] == [
+        {"ts_code": "000001.SZ", "name": None}
+    ]
 
 
 def test_preparing_an_already_frozen_protocol_is_idempotent(

@@ -6,6 +6,7 @@ const state = {
   backtestMeta: null,
   selectedPartition: null,
   backtestTimer: null,
+  positions: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -446,6 +447,51 @@ function renderEquityChart(curve) {
     <text x="34" y="243" text-anchor="end" class="chart-label">${min.toFixed(2)}</text>`;
 }
 
+function renderPosition(positionIndex = null) {
+  const positions = state.positions || [];
+  if (!positions.length) {
+    $("positionSummary").textContent = "该回测没有可展示的持仓明细。";
+    $("positionRows").innerHTML = "";
+    $("removedPositions").innerHTML = "";
+    return;
+  }
+  const index = positionIndex == null
+    ? positions.length - 1
+    : Math.max(0, Math.min(positions.length - 1, Number(positionIndex)));
+  const position = positions[index];
+  $("positionDateSelect").value = String(index);
+  const cost = Number(position.transaction_cost || 0) + Number(position.slippage_cost || 0);
+  $("positionSummary").innerHTML = `
+    <span>信号日：<strong>${escapeHtml(position.signal_date)}</strong></span>
+    <span>执行：<strong>${escapeHtml(position.execution_start)}${position.execution_end !== position.execution_start ? ` → ${escapeHtml(position.execution_end)}` : ""}</strong></span>
+    <span>换手：<strong>${pct(position.turnover, 1)}</strong></span>
+    <span>费用：<strong>${num(cost, 0)}</strong></span>
+    <span>受限买入/卖出：<strong>${escapeHtml(position.blocked_buys)}/${escapeHtml(position.blocked_sells)}</strong></span>`;
+  $("positionRows").innerHTML = (position.holdings || []).map((item) => `
+    <tr>
+      <td><span class="change-tag change-${item.change === "added" ? "added" : "held"}">${item.change === "added" ? "新买入" : "继续持有"}</span></td>
+      <td><strong>${escapeHtml(item.ts_code)}</strong></td>
+      <td>${escapeHtml(item.name || "名称缺失")}</td>
+      <td>${escapeHtml(item.industry || "行业缺失")}</td>
+    </tr>`).join("") || `<tr><td colspan="4" class="empty-inline">该期没有持仓</td></tr>`;
+  const removed = position.removed || [];
+  $("removedPositions").innerHTML = removed.length
+    ? `<strong>相对上期卖出：</strong><br>${removed.map(
+      (item) => `<span class="removed-chip">${escapeHtml(item.name || item.ts_code)} · ${escapeHtml(item.ts_code)}</span>`
+    ).join("")}`
+    : `<strong>相对上期卖出：</strong> 无`;
+}
+
+function renderPositionHistory(positions) {
+  state.positions = positions || [];
+  $("positionDateSelect").innerHTML = state.positions.length
+    ? state.positions.map((item, index) =>
+      `<option value="${index}">${escapeHtml(item.signal_date)} · 持仓 ${escapeHtml(item.holdings?.length || 0)} 只</option>`
+    ).join("")
+    : `<option value="">暂无持仓明细</option>`;
+  renderPosition();
+}
+
 async function loadBacktestResult(experimentId) {
   if (!experimentId) {
     $("backtestEmpty").classList.remove("hidden");
@@ -466,6 +512,7 @@ async function loadBacktestResult(experimentId) {
     $("btRebalances").textContent = text(summary.rebalance_count);
     $("btCosts").textContent = `累计成本 ${num(summary.total_cost, 0)}`;
     renderEquityChart(result.curve || []);
+    renderPositionHistory(result.positions || []);
     $("backtestAudit").innerHTML = `
       <strong>${summary.protocol_id ? "正式验证回测" : "探索性回测"}</strong> ·
       ${escapeHtml(summary.start_date)} 至 ${escapeHtml(summary.end_date)} ·
@@ -607,6 +654,7 @@ function bindEvents() {
   $("runBacktest").addEventListener("click", runBacktest);
   $("toggleBacktestLog").addEventListener("click", () => $("backtestLog").classList.toggle("hidden"));
   $("backtestResultSelect").addEventListener("change", (event) => loadBacktestResult(event.target.value));
+  $("positionDateSelect").addEventListener("change", (event) => renderPosition(event.target.value));
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => {
       document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active"));
