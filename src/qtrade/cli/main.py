@@ -15,6 +15,7 @@ from qtrade.domain import Dataset
 from qtrade.factors.service import FactorAnalysisService
 from qtrade.industry.service import IndustryAnalysisService
 from qtrade.market.service import MarketAnalysisService
+from qtrade.research.service import ResearchService
 
 
 def parse_date(value: str) -> date:
@@ -79,6 +80,17 @@ def build_factor_service(config: AppConfig) -> FactorAnalysisService:
     )
 
 
+def build_research_service(config: AppConfig) -> ResearchService:
+    config.paths.create()
+    return ResearchService(
+        research_config=config.research,
+        backtest_config=config.backtest,
+        curated_store=ParquetDatasetStore(config.paths.curated, "curated"),
+        provider=config.provider.name,
+        reports_root=config.paths.reports,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qtrade", description="QTrade research toolkit")
     parser.add_argument("--config", default="config/base.yaml", help="YAML configuration path")
@@ -129,6 +141,24 @@ def build_parser() -> argparse.ArgumentParser:
     industry.add_argument("--date", required=True, type=parse_date)
     factors = analyze_commands.add_parser("factors", help="Generate multi-factor stock candidates")
     factors.add_argument("--date", required=True, type=parse_date)
+
+    research = commands.add_parser("research", help="Historical factor research")
+    research_commands = research.add_subparsers(dest="research_command", required=True)
+    factor_research = research_commands.add_parser(
+        "factors", help="Calculate factor Rank IC and quantile returns"
+    )
+    factor_research.add_argument("--start", required=True, type=parse_date)
+    factor_research.add_argument("--end", required=True, type=parse_date)
+    factor_research.add_argument("--horizon", type=int)
+    factor_research.add_argument("--quantiles", type=int)
+
+    backtest = commands.add_parser("backtest", help="Portfolio backtesting")
+    backtest_commands = backtest.add_subparsers(dest="backtest_command", required=True)
+    candidates = backtest_commands.add_parser(
+        "candidates", help="Backtest archived factor candidates"
+    )
+    candidates.add_argument("--start", required=True, type=parse_date)
+    candidates.add_argument("--end", required=True, type=parse_date)
     return parser
 
 
@@ -156,6 +186,49 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     config = load_config(Path(args.config))
+    if args.command in {"research", "backtest"}:
+        try:
+            if args.command == "research":
+                updates = {}
+                if args.horizon is not None:
+                    updates["forward_horizon_days"] = args.horizon
+                if args.quantiles is not None:
+                    updates["quantiles"] = args.quantiles
+                if updates:
+                    config.research = type(config.research).model_validate(
+                        {**config.research.model_dump(), **updates}
+                    )
+                result = build_research_service(config).research_factors(
+                    args.start, args.end
+                )
+                analysis = result.analysis
+                spread = (
+                    analysis.top_bottom_spread
+                    if analysis.top_bottom_spread is not None
+                    else "N/A"
+                )
+                print(
+                    f"Evaluated snapshots: {analysis.evaluated_snapshot_count}/"
+                    f"{analysis.snapshot_count}; spread: {spread}"
+                )
+                succeeded = analysis.evaluated_snapshot_count > 0
+            else:
+                result = build_research_service(config).backtest_candidates(
+                    args.start, args.end
+                )
+                analysis = result.analysis
+                print(
+                    f"Rebalances: {analysis.rebalance_count}; "
+                    f"final equity: {analysis.final_equity:.2f}; "
+                    f"return: {analysis.portfolio.total_return:.2%}"
+                )
+                succeeded = analysis.rebalance_count > 0
+            print(f"Report: {result.markdown_path}")
+            return 0 if succeeded else 1
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
     if args.command == "analyze":
         try:
             if args.analyze_command == "market":

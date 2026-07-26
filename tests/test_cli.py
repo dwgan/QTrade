@@ -27,6 +27,41 @@ def test_factor_analysis_command_parses() -> None:
     assert args.date == date(2026, 7, 24)
 
 
+def test_factor_research_command_parses() -> None:
+    args = build_parser().parse_args(
+        [
+            "research",
+            "factors",
+            "--start",
+            "2025-01-01",
+            "--end",
+            "2025-12-31",
+            "--horizon",
+            "20",
+            "--quantiles",
+            "5",
+        ]
+    )
+
+    assert args.research_command == "factors"
+    assert args.horizon == 20
+
+
+def test_candidate_backtest_command_parses() -> None:
+    args = build_parser().parse_args(
+        [
+            "backtest",
+            "candidates",
+            "--start",
+            "2025-01-01",
+            "--end",
+            "2025-12-31",
+        ]
+    )
+
+    assert args.backtest_command == "candidates"
+
+
 def test_financial_snapshot_command_parses() -> None:
     args = build_parser().parse_args(
         [

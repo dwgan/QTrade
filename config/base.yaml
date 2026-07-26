@@ -60,6 +60,19 @@ factors:
     value: 0.20
     low_risk: 0.15
 
+research:
+  forward_horizon_days: 20
+  quantiles: 5
+  minimum_cross_section: 10
+
+backtest:
+  initial_capital: 1000000
+  transaction_cost_rate: 0.0015
+  annual_risk_free_rate: 0.0
+  candidate_count: 20
+  max_candidates_per_industry: 5
+  benchmark_code: 000300.SH
+
 update:
   datasets:
     - trade_calendar

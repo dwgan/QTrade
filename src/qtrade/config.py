@@ -126,6 +126,21 @@ class FactorConfig(BaseModel):
         return value
 
 
+class ResearchConfig(BaseModel):
+    forward_horizon_days: int = Field(default=20, ge=1)
+    quantiles: int = Field(default=5, ge=2, le=10)
+    minimum_cross_section: int = Field(default=10, ge=2)
+
+
+class BacktestConfig(BaseModel):
+    initial_capital: float = Field(default=1_000_000, gt=0)
+    transaction_cost_rate: float = Field(default=0.0015, ge=0, lt=0.1)
+    annual_risk_free_rate: float = Field(default=0.0, ge=0, lt=1)
+    candidate_count: int = Field(default=20, ge=1)
+    max_candidates_per_industry: int = Field(default=5, ge=1)
+    benchmark_code: str = "000300.SH"
+
+
 class ValidationConfig(BaseModel):
     minimum_daily_rows: int = Field(default=100, ge=0)
     fail_on_warning: bool = False
@@ -138,6 +153,8 @@ class AppConfig(BaseModel):
     market: MarketConfig = Field(default_factory=MarketConfig)
     industry: IndustryConfig = Field(default_factory=IndustryConfig)
     factors: FactorConfig = Field(default_factory=FactorConfig)
+    research: ResearchConfig = Field(default_factory=ResearchConfig)
+    backtest: BacktestConfig = Field(default_factory=BacktestConfig)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     project_root: Path = Field(default=Path.cwd(), exclude=True)

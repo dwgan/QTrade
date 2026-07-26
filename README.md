@@ -92,6 +92,16 @@ qtrade analyze factors --date 2026-07-24
 
 全市场季度财务命令使用 Tushare `fina_indicator_vip`，需要相应积分权限。分析结果写入 `reports/factors/YYYY-MM-DD`，包括候选报告和完整排名 Parquet。
 
+积累历史因子排名后，可以运行因子有效性检验和候选组合回测：
+
+```powershell
+qtrade research factors --start 2025-01-01 --end 2025-12-31
+qtrade backtest candidates --start 2025-01-01 --end 2025-12-31
+```
+
+研究结果写入 `reports/research`。规则与限制见
+[因子研究与组合回测](./docs/10-因子研究与组合回测.md)。
+
 ## 数据位置
 
 默认配置位于 `config/base.yaml`：
