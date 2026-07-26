@@ -1,21 +1,23 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
-    echo QTrade 虚拟环境不存在。
-    echo 请先按照 README.md 完成安装。
+    echo QTrade virtual environment was not found.
+    echo Complete the installation steps in README.md first.
     pause
     exit /b 1
 )
 
-echo 正在启动 QTrade 本地操作界面...
-echo 浏览器将自动打开。关闭本窗口或按 Ctrl+C 可停止服务。
+echo Starting QTrade local interface...
+echo The browser will open automatically. Press Ctrl+C to stop.
 echo.
-".venv\Scripts\python.exe" -m qtrade ui
+".venv\Scripts\python.exe" -m qtrade ui %*
+set "qtrade_exit_code=%errorlevel%"
 
-if errorlevel 1 (
+if not "%qtrade_exit_code%"=="0" (
     echo.
-    echo QTrade 启动失败，请查看上方错误信息。
+    echo QTrade failed to start. Review the error above.
     pause
 )
+
+exit /b %qtrade_exit_code%
