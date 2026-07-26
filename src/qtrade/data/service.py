@@ -573,7 +573,7 @@ class DataIngestionService:
     ) -> CoverageResult:
         if start_date > end_date:
             raise ValueError("Coverage start date must not be after end date.")
-        _, calendar = self.curated_store.read_latest(
+        calendar = self.curated_store.read_all(
             Dataset.TRADE_CALENDAR,
             self.provider.name,
         )

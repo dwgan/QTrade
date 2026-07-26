@@ -170,6 +170,20 @@ class ParquetDatasetStore:
         partition_date, path = max(candidates, key=lambda item: item[0])
         return partition_date, pl.read_parquet(path)
 
+    def read_all(self, dataset: Dataset, provider: str) -> pl.DataFrame:
+        provider_dir = self.root / dataset.value / f"provider={provider}"
+        if not provider_dir.exists():
+            raise FileNotFoundError(f"Dataset directory not found: {provider_dir}")
+        paths = sorted(provider_dir.glob("as_of_date=*/data.parquet"))
+        if not paths:
+            raise FileNotFoundError(f"No {dataset.value} partitions found.")
+        frames = [pl.read_parquet(path) for path in paths]
+        return (
+            frames[0]
+            if len(frames) == 1
+            else pl.concat(frames, how="diagonal_relaxed")
+        )
+
 
 class DuckDBCatalog:
     """Small query facade; no persistent database is required."""
