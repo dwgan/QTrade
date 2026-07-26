@@ -4,6 +4,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 from qtrade.config import BacktestConfig, ResearchConfig
 from qtrade.data.storage import ParquetDatasetStore
@@ -11,6 +12,18 @@ from qtrade.domain import Dataset
 from qtrade.research.analyzer import FactorResearchAnalyzer
 from qtrade.research.backtest import CandidateBacktester
 from qtrade.research.models import CandidateBacktestAnalysis, FactorResearchAnalysis
+from qtrade.research.protocols import (
+    ExperimentRecord,
+    ExperimentStore,
+    PartitionName,
+    ProtocolStatus,
+    ProtocolStore,
+    TemporalLeakageAuditor,
+    canonical_hash,
+    current_git_commit,
+    frame_manifest_hash,
+    git_research_tree_is_clean,
+)
 from qtrade.research.reporting import ResearchReportWriter
 from qtrade.research.snapshots import FactorSnapshotStore
 
@@ -37,13 +50,30 @@ class ResearchService:
         curated_store: ParquetDatasetStore,
         provider: str,
         reports_root: Path,
+        runtime_root: Path | None = None,
+        project_root: Path | None = None,
+        factor_config: dict[str, Any] | None = None,
     ) -> None:
         self.research_config = research_config
         self.backtest_config = backtest_config
         self.curated_store = curated_store
         self.provider = provider
+        self.project_root = Path(project_root or Path.cwd())
+        self.factor_config = factor_config or {}
         self.snapshots = FactorSnapshotStore(reports_root)
         self.reporter = ResearchReportWriter(reports_root)
+        runtime = Path(runtime_root or Path(reports_root).parent / "runtime")
+        self.protocols = ProtocolStore(runtime)
+        self.experiments = ExperimentStore(runtime)
+
+    def config_hash(self) -> str:
+        return canonical_hash(
+            {
+                "factors": self.factor_config,
+                "research": self.research_config.model_dump(mode="json"),
+                "backtest": self.backtest_config.model_dump(mode="json"),
+            }
+        )
 
     def _snapshots(self, start_date: date, end_date: date):
         dates = self.snapshots.available_dates(start_date, end_date)
@@ -76,31 +106,158 @@ class ResearchService:
         start_date: date,
         end_date: date,
         sample_split_date: date | None = None,
+        protocol_id: str | None = None,
+        partition: PartitionName | None = None,
+        reveal_holdout: bool = False,
     ) -> CandidateBacktestResult:
-        snapshots = self._snapshots(start_date, end_date)
-        prices = self.curated_store.read_range(
-            Dataset.DAILY_PRICES, self.provider, start_date, end_date
-        )
-        adjustments = self.curated_store.read_range(
-            Dataset.ADJUST_FACTORS, self.provider, start_date, end_date
-        )
-        index_daily = self.curated_store.read_range(
-            Dataset.INDEX_DAILY, self.provider, start_date, end_date
-        )
-        stock_limits = None
-        with suppress(FileNotFoundError):
-            stock_limits = self.curated_store.read_range(
-                Dataset.STOCK_LIMIT, self.provider, start_date, end_date
+        protocol = None
+        protocol_hash = None
+        code_commit = current_git_commit(self.project_root)
+        config_hash = self.config_hash()
+        if protocol_id is not None:
+            if partition is None:
+                raise ValueError("A protocol backtest requires --partition.")
+            protocol = self.protocols.load(protocol_id)
+            if protocol.status != ProtocolStatus.FROZEN:
+                raise ValueError("A formal backtest requires a frozen protocol.")
+            if not git_research_tree_is_clean(self.project_root):
+                raise ValueError(
+                    "Formal backtest requires a clean Git worktree for src, config, "
+                    "and pyproject.toml. Commit the research implementation first."
+                )
+            expected = protocol.partition(partition)
+            if expected.end_date is None:
+                raise ValueError("Forward partitions are not supported by historical backtest.")
+            if start_date != expected.start_date or end_date != expected.end_date:
+                raise ValueError(
+                    f"Requested dates must exactly match the frozen {partition.value} "
+                    f"partition: {expected.start_date} to {expected.end_date}."
+                )
+            if protocol.config_hash != config_hash:
+                raise ValueError(
+                    "Current strategy/research/backtest configuration does not match "
+                    "the frozen protocol."
+                )
+            if (
+                protocol.code_commit != "unknown"
+                and code_commit != "unknown"
+                and protocol.code_commit != code_commit
+            ):
+                raise ValueError(
+                    f"Current code commit {code_commit} does not match frozen protocol "
+                    f"commit {protocol.code_commit}."
+                )
+            if partition == PartitionName.HOLDOUT:
+                state = self.protocols.state(protocol_id)
+                if state.holdout_revealed_at is None:
+                    if not reveal_holdout:
+                        raise ValueError(
+                            "Holdout is sealed. Pass --reveal-holdout for the one-time reveal."
+                        )
+                    self.protocols.reveal_holdout(protocol_id)
+            if partition == PartitionName.VALIDATION:
+                validation_trials = [
+                    item
+                    for item in self.experiments.list(protocol_id)
+                    if item.partition == PartitionName.VALIDATION
+                ]
+                if len(validation_trials) >= protocol.allowed_trials:
+                    raise ValueError(
+                        f"Protocol validation trial limit reached "
+                        f"({protocol.allowed_trials}). Create a new protocol version."
+                    )
+            protocol_hash = protocol.content_hash
+        elif partition is not None or reveal_holdout:
+            raise ValueError("--partition and --reveal-holdout require --protocol.")
+
+        record = self.experiments.create(
+            ExperimentRecord(
+                protocol_id=protocol_id,
+                partition=partition,
+                kind="candidate_backtest",
+                start_date=start_date,
+                end_date=end_date,
+                code_commit=code_commit,
+                config_hash=config_hash,
+                protocol_hash=protocol_hash,
             )
-        analysis, curve, trades = CandidateBacktester(self.backtest_config).run(
-            start_date,
-            end_date,
-            snapshots,
-            prices,
-            adjustments,
-            index_daily,
-            stock_limits,
-            sample_split_date,
         )
-        json_path, markdown_path = self.reporter.write_backtest(analysis, curve, trades)
-        return CandidateBacktestResult(analysis, json_path, markdown_path)
+        try:
+            snapshots = self._snapshots(start_date, end_date)
+            audit = TemporalLeakageAuditor.audit_snapshots(snapshots)
+            if not audit.passed:
+                first = audit.issues[0]
+                raise ValueError(
+                    f"Temporal leakage detected in {first.column}: "
+                    f"{first.offending_rows} rows on snapshot {first.snapshot_date}."
+                )
+            prices = self.curated_store.read_range(
+                Dataset.DAILY_PRICES, self.provider, start_date, end_date
+            )
+            adjustments = self.curated_store.read_range(
+                Dataset.ADJUST_FACTORS, self.provider, start_date, end_date
+            )
+            index_daily = self.curated_store.read_range(
+                Dataset.INDEX_DAILY, self.provider, start_date, end_date
+            )
+            stock_limits = None
+            with suppress(FileNotFoundError):
+                stock_limits = self.curated_store.read_range(
+                    Dataset.STOCK_LIMIT, self.provider, start_date, end_date
+                )
+            frames = {
+                "daily_prices": prices,
+                "adjust_factors": adjustments,
+                "index_daily": index_daily,
+                **{
+                    f"ranking_{snapshot_date.isoformat()}": ranking
+                    for snapshot_date, ranking in snapshots
+                },
+            }
+            if stock_limits is not None:
+                frames["stock_limit"] = stock_limits
+            data_version = frame_manifest_hash(frames)
+            if (
+                protocol is not None
+                and protocol.data_version != "unfrozen"
+                and protocol.data_version != data_version
+            ):
+                raise ValueError(
+                    "Loaded data does not match the version frozen in the protocol."
+                )
+            analysis, curve, trades = CandidateBacktester(self.backtest_config).run(
+                start_date,
+                end_date,
+                snapshots,
+                prices,
+                adjustments,
+                index_daily,
+                stock_limits,
+                sample_split_date,
+            )
+            analysis = analysis.model_copy(
+                update={
+                    "experiment_id": record.experiment_id,
+                    "protocol_id": protocol_id,
+                    "protocol_hash": protocol_hash,
+                    "research_partition": partition.value if partition else "exploratory",
+                    "code_commit": code_commit,
+                    "config_hash": config_hash,
+                    "data_version": data_version,
+                    "leakage_audit_passed": audit.passed,
+                    "leakage_audit_warnings": audit.warnings,
+                }
+            )
+            json_path, markdown_path = self.reporter.write_backtest(
+                analysis, curve, trades
+            )
+            self.experiments.complete(
+                record.experiment_id,
+                data_version=data_version,
+                result_json=json_path,
+                result_markdown=markdown_path,
+            )
+            return CandidateBacktestResult(analysis, json_path, markdown_path)
+        except Exception as exc:
+            self.experiments.fail(record.experiment_id, str(exc))
+            raise

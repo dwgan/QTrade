@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from qtrade.config import AppConfig, load_config
@@ -18,6 +19,16 @@ from qtrade.industry.service import IndustryAnalysisService
 from qtrade.market.service import MarketAnalysisService
 from qtrade.observation.service import ObservationService
 from qtrade.pipeline.service import DailyPipelineService
+from qtrade.research.protocols import (
+    ExperimentStore,
+    PartitionName,
+    ProtocolStore,
+    ResearchPartition,
+    StrategyProtocol,
+    canonical_hash,
+    current_git_commit,
+    git_research_tree_is_clean,
+)
 from qtrade.research.service import ResearchService
 
 
@@ -101,6 +112,19 @@ def build_research_service(config: AppConfig) -> ResearchService:
         curated_store=ParquetDatasetStore(config.paths.curated, "curated"),
         provider=config.provider.name,
         reports_root=config.paths.reports,
+        runtime_root=config.paths.runtime,
+        project_root=config.project_root,
+        factor_config=config.factors.model_dump(mode="json"),
+    )
+
+
+def research_config_hash(config: AppConfig) -> str:
+    return canonical_hash(
+        {
+            "factors": config.factors.model_dump(mode="json"),
+            "research": config.research.model_dump(mode="json"),
+            "backtest": config.backtest.model_dump(mode="json"),
+        }
     )
 
 
@@ -194,6 +218,40 @@ def build_parser() -> argparse.ArgumentParser:
     factor_research.add_argument("--horizon", type=int)
     factor_research.add_argument("--quantiles", type=int)
 
+    protocol = commands.add_parser("protocol", help="Anti-overfitting research protocols")
+    protocol_commands = protocol.add_subparsers(
+        dest="protocol_command", required=True
+    )
+    protocol_create = protocol_commands.add_parser(
+        "create", help="Create a draft strategy protocol"
+    )
+    protocol_create.add_argument("--id", required=True, dest="protocol_id")
+    protocol_create.add_argument("--title", required=True)
+    protocol_create.add_argument("--hypothesis", required=True)
+    protocol_create.add_argument("--development-start", required=True, type=parse_date)
+    protocol_create.add_argument("--development-end", required=True, type=parse_date)
+    protocol_create.add_argument("--validation-start", required=True, type=parse_date)
+    protocol_create.add_argument("--validation-end", required=True, type=parse_date)
+    protocol_create.add_argument("--holdout-start", required=True, type=parse_date)
+    protocol_create.add_argument("--holdout-end", required=True, type=parse_date)
+    protocol_create.add_argument("--allowed-trials", type=int, default=1)
+    protocol_create.add_argument("--parent")
+    protocol_freeze = protocol_commands.add_parser(
+        "freeze", help="Freeze a draft protocol and calculate its immutable hash"
+    )
+    protocol_freeze.add_argument("--id", required=True, dest="protocol_id")
+    protocol_freeze.add_argument(
+        "--data-version",
+        help="Optional precomputed immutable data version",
+    )
+    protocol_show = protocol_commands.add_parser("show", help="Show protocol and state")
+    protocol_show.add_argument("--id", required=True, dest="protocol_id")
+    protocol_commands.add_parser("list", help="List research protocols")
+    protocol_experiments = protocol_commands.add_parser(
+        "experiments", help="List all recorded trials for a protocol"
+    )
+    protocol_experiments.add_argument("--id", required=True, dest="protocol_id")
+
     backtest = commands.add_parser("backtest", help="Portfolio backtesting")
     backtest_commands = backtest.add_subparsers(dest="backtest_command", required=True)
     candidates = backtest_commands.add_parser(
@@ -205,6 +263,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--split-date",
         type=parse_date,
         help="First out-of-sample date; defaults to configured split ratio",
+    )
+    candidates.add_argument("--protocol", dest="protocol_id")
+    candidates.add_argument(
+        "--partition",
+        choices=[item.value for item in PartitionName if item != PartitionName.FORWARD],
+        help="Frozen protocol partition for a formal validation run",
+    )
+    candidates.add_argument(
+        "--reveal-holdout",
+        action="store_true",
+        help="Explicitly reveal a sealed holdout partition",
     )
 
     observe = commands.add_parser("observe", help="Daily research observation")
@@ -271,6 +340,106 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     config = load_config(Path(args.config))
+    if args.command == "protocol":
+        protocols = ProtocolStore(config.paths.runtime)
+        experiments = ExperimentStore(config.paths.runtime)
+        try:
+            if args.protocol_command == "create":
+                partitions = [
+                    ResearchPartition(
+                        name=PartitionName.DEVELOPMENT,
+                        start_date=args.development_start,
+                        end_date=args.development_end,
+                    ),
+                    ResearchPartition(
+                        name=PartitionName.VALIDATION,
+                        start_date=args.validation_start,
+                        end_date=args.validation_end,
+                    ),
+                    ResearchPartition(
+                        name=PartitionName.HOLDOUT,
+                        start_date=args.holdout_start,
+                        end_date=args.holdout_end,
+                    ),
+                    ResearchPartition(
+                        name=PartitionName.FORWARD,
+                        start_date=args.holdout_end + timedelta(days=1),
+                        end_date=None,
+                    ),
+                ]
+                created = StrategyProtocol(
+                    protocol_id=args.protocol_id,
+                    parent_protocol_id=args.parent,
+                    title=args.title,
+                    hypothesis=args.hypothesis,
+                    partitions=partitions,
+                    strategy={
+                        "universe": "historical configured A-share universe",
+                        "factors": config.factors.model_dump(mode="json"),
+                        "research": config.research.model_dump(mode="json"),
+                    },
+                    execution=config.backtest.model_dump(mode="json"),
+                    acceptance_criteria={
+                        "future_leakage_rows": 0,
+                        "positive_validation_excess_return": True,
+                        "positive_holdout_excess_return": True,
+                        "cost_multiplier_stress": 2.0,
+                    },
+                    allowed_trials=args.allowed_trials,
+                    code_commit=current_git_commit(config.project_root),
+                    config_hash=research_config_hash(config),
+                )
+                path = protocols.create(created)
+                print(f"Draft protocol created: {path}")
+                print("Review it, commit the code/config, then freeze it before validation.")
+                return 0
+            if args.protocol_command == "freeze":
+                if not git_research_tree_is_clean(config.project_root):
+                    raise ValueError(
+                        "Commit changes under src, config, and pyproject.toml before "
+                        "freezing a formal protocol."
+                    )
+                frozen = protocols.freeze(
+                    args.protocol_id,
+                    data_version=args.data_version,
+                    code_commit=current_git_commit(config.project_root),
+                    config_hash=research_config_hash(config),
+                )
+                print(f"Protocol frozen: {frozen.protocol_id}")
+                print(f"Hash: {frozen.content_hash}")
+                return 0
+            if args.protocol_command == "show":
+                item = protocols.load(args.protocol_id)
+                state = protocols.state(args.protocol_id)
+                print(
+                    json.dumps(
+                        {
+                            "protocol": item.model_dump(mode="json"),
+                            "state": state.model_dump(mode="json"),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+            if args.protocol_command == "experiments":
+                for item in experiments.list(args.protocol_id):
+                    partition = item.partition.value if item.partition else "exploratory"
+                    print(
+                        f"{item.experiment_id} {item.status.value} {partition} "
+                        f"{item.start_date}..{item.end_date}"
+                    )
+                return 0
+            for item in protocols.list():
+                print(
+                    f"{item.protocol_id} v{item.version} {item.status.value} "
+                    f"{item.title}"
+                )
+            return 0
+        except (FileExistsError, FileNotFoundError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
     if args.command == "ui":
         if not 1 <= args.port <= 65535:
             print("Error: port must be between 1 and 65535.", file=sys.stderr)
@@ -377,7 +546,12 @@ def run(args: argparse.Namespace) -> int:
                 succeeded = analysis.evaluated_snapshot_count > 0
             else:
                 result = build_research_service(config).backtest_candidates(
-                    args.start, args.end, args.split_date
+                    args.start,
+                    args.end,
+                    args.split_date,
+                    args.protocol_id,
+                    PartitionName(args.partition) if args.partition else None,
+                    args.reveal_holdout,
                 )
                 analysis = result.analysis
                 print(

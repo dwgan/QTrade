@@ -81,4 +81,13 @@ class CandidateBacktestAnalysis(BaseModel):
     benchmark: PerformanceMetrics
     sample_performance: list[SamplePerformance] = Field(default_factory=list)
     cost_sensitivity: list[CostSensitivityMetric] = Field(default_factory=list)
+    experiment_id: str | None = None
+    protocol_id: str | None = None
+    protocol_hash: str | None = None
+    research_partition: str | None = None
+    code_commit: str | None = None
+    config_hash: str | None = None
+    data_version: str | None = None
+    leakage_audit_passed: bool | None = None
+    leakage_audit_warnings: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

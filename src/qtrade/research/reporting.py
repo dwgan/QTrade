@@ -61,12 +61,15 @@ class ResearchReportWriter:
         curve: pl.DataFrame,
         trades: pl.DataFrame,
     ) -> tuple[Path, Path]:
-        directory = (
-            self.root
-            / "research"
-            / "backtests"
-            / f"{analysis.start_date}_{analysis.end_date}"
-        )
+        directory = self.root / "research" / "backtests"
+        if analysis.experiment_id:
+            directory = (
+                directory
+                / (analysis.protocol_id or "exploratory")
+                / analysis.experiment_id
+            )
+        else:
+            directory = directory / f"{analysis.start_date}_{analysis.end_date}"
         directory.mkdir(parents=True, exist_ok=True)
         json_path = directory / "summary.json"
         markdown_path = directory / "summary.md"
@@ -119,6 +122,16 @@ class ResearchReportWriter:
             [
                 f"# 候选组合回测：{analysis.start_date} 至 {analysis.end_date}",
                 "",
+                f"- 研究性质：{'正式验证' if analysis.protocol_id else '探索性回测'}",
+                f"- 实验 ID：{analysis.experiment_id or '未登记'}",
+                f"- 策略协议：{analysis.protocol_id or '未绑定'}",
+                f"- 研究分区：{analysis.research_partition or '未指定'}",
+                f"- 协议哈希：{analysis.protocol_hash or '无'}",
+                f"- 代码提交：{analysis.code_commit or '未知'}",
+                f"- 配置哈希：{analysis.config_hash or '未知'}",
+                f"- 数据版本：{analysis.data_version or '未知'}",
+                f"- 时间泄漏审计："
+                f"{'通过' if analysis.leakage_audit_passed else '未通过或未执行'}",
                 f"- 执行规则：{analysis.execution_rule}",
                 f"- 单边成本率：{analysis.transaction_cost_rate:.3%}",
                 f"- 滑点率：{analysis.slippage_rate:.3%}",
@@ -127,6 +140,11 @@ class ResearchReportWriter:
                 f"{analysis.blocked_sell_orders}",
                 f"- 延迟执行交易日：{analysis.delayed_execution_days}",
                 f"- 期末权益：{analysis.final_equity:,.2f}",
+                "",
+                *[
+                    f"> 审计提示：{warning}"
+                    for warning in analysis.leakage_audit_warnings
+                ],
                 "",
                 "| 指标 | 组合 | 基准 |",
                 "| --- | ---: | ---: |",

@@ -65,6 +65,58 @@ def test_candidate_backtest_command_parses() -> None:
     assert args.split_date == date(2025, 9, 1)
 
 
+def test_formal_candidate_backtest_command_parses() -> None:
+    args = build_parser().parse_args(
+        [
+            "backtest",
+            "candidates",
+            "--start",
+            "2023-01-01",
+            "--end",
+            "2024-12-31",
+            "--protocol",
+            "quality_v1",
+            "--partition",
+            "holdout",
+            "--reveal-holdout",
+        ]
+    )
+
+    assert args.protocol_id == "quality_v1"
+    assert args.partition == "holdout"
+    assert args.reveal_holdout is True
+
+
+def test_protocol_create_command_parses() -> None:
+    args = build_parser().parse_args(
+        [
+            "protocol",
+            "create",
+            "--id",
+            "quality_v1",
+            "--title",
+            "Quality v1",
+            "--hypothesis",
+            "Quality persists",
+            "--development-start",
+            "2018-01-01",
+            "--development-end",
+            "2020-12-31",
+            "--validation-start",
+            "2021-01-01",
+            "--validation-end",
+            "2022-12-31",
+            "--holdout-start",
+            "2023-01-01",
+            "--holdout-end",
+            "2024-12-31",
+        ]
+    )
+
+    assert args.protocol_command == "create"
+    assert args.protocol_id == "quality_v1"
+
+
 def test_daily_observation_command_parses() -> None:
     args = build_parser().parse_args(["observe", "daily", "--date", "2026-07-24"])
 
