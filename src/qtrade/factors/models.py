@@ -40,6 +40,7 @@ class FactorAnalysis(BaseModel):
     security_master_snapshot_date: date
     security_names_snapshot_date: date | None = None
     index_members_snapshot_date: date | None = None
+    industry_members_snapshot_date: date | None = None
     universe_index_codes: list[str] = Field(default_factory=list)
     index_membership_dates: dict[str, date] = Field(default_factory=dict)
     universe_size: int

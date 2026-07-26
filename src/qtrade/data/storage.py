@@ -96,9 +96,12 @@ class ParquetDatasetStore:
             raise FileNotFoundError(
                 f"No {dataset.value} partitions found from {start_date} to {end_date}."
             )
-        return pl.scan_parquet(
-            [str(path) for path in sorted(paths)], hive_partitioning=False
-        ).collect()
+        frames = [pl.read_parquet(path) for path in sorted(paths)]
+        return (
+            frames[0]
+            if len(frames) == 1
+            else pl.concat(frames, how="diagonal_relaxed")
+        )
 
     def read_latest_on_or_before(
         self,
@@ -123,6 +126,28 @@ class ParquetDatasetStore:
             raise FileNotFoundError(
                 f"No {dataset.value} partition found on or before {as_of_date}."
             )
+        partition_date, path = max(candidates, key=lambda item: item[0])
+        return partition_date, pl.read_parquet(path)
+
+    def read_latest(
+        self,
+        dataset: Dataset,
+        provider: str,
+    ) -> tuple[date, pl.DataFrame]:
+        provider_dir = self.root / dataset.value / f"provider={provider}"
+        if not provider_dir.exists():
+            raise FileNotFoundError(f"Dataset directory not found: {provider_dir}")
+        candidates: list[tuple[date, Path]] = []
+        for partition in provider_dir.glob("as_of_date=*"):
+            try:
+                partition_date = date.fromisoformat(partition.name.split("=", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            data_path = partition / "data.parquet"
+            if data_path.exists():
+                candidates.append((partition_date, data_path))
+        if not candidates:
+            raise FileNotFoundError(f"No {dataset.value} partitions found.")
         partition_date, path = max(candidates, key=lambda item: item[0])
         return partition_date, pl.read_parquet(path)
 

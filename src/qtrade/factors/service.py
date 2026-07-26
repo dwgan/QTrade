@@ -62,20 +62,24 @@ class FactorAnalysisService:
         financial_date, financials = self.curated_store.read_latest_on_or_before(
             Dataset.FINANCIAL_INDICATORS, self.provider, as_of_date
         )
-        master_date, master = self.curated_store.read_latest_on_or_before(
-            Dataset.SECURITY_MASTER, self.provider, as_of_date
+        master_date, master = self.curated_store.read_latest(
+            Dataset.SECURITY_MASTER, self.provider
         )
-        names_date, names = self.curated_store.read_latest_on_or_before(
-            Dataset.SECURITY_NAMES, self.provider, as_of_date
+        names_date, names = self.curated_store.read_latest(
+            Dataset.SECURITY_NAMES, self.provider
         )
         members_date, members = self.curated_store.read_latest_on_or_before(
             Dataset.INDEX_MEMBERS, self.provider, as_of_date
+        )
+        industry_date, industries = self.curated_store.read_latest(
+            Dataset.INDUSTRY_MEMBERS, self.provider
         )
         universe = self.universe_builder.build(
             as_of_date,
             master,
             names,
             members,
+            industries,
         )
         stock_limits = None
         try:
@@ -101,6 +105,10 @@ class FactorAnalysisService:
         )
         computation.analysis.security_names_snapshot_date = names_date
         computation.analysis.index_members_snapshot_date = members_date
+        computation.analysis.industry_members_snapshot_date = industry_date
+        computation.analysis.warnings.append(
+            f"Effective-dated industry history snapshot: {industry_date}."
+        )
         computation.analysis.universe_index_codes = universe.audit.index_codes
         computation.analysis.index_membership_dates = (
             universe.audit.index_membership_dates

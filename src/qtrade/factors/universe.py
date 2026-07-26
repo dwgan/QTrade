@@ -15,6 +15,7 @@ class PointInTimeUniverse(BaseModel):
     member_security_count: int
     final_security_count: int
     missing_historical_names: int
+    missing_historical_industries: int = 0
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -45,6 +46,7 @@ class PointInTimeUniverseBuilder:
         security_master: pl.DataFrame,
         security_names: pl.DataFrame,
         index_members: pl.DataFrame,
+        industry_members: pl.DataFrame | None = None,
     ) -> UniverseBuildResult:
         master = self._master(as_of_date, security_master)
         names = self._names(as_of_date, security_names)
@@ -77,12 +79,37 @@ class PointInTimeUniverseBuilder:
                 ).alias("universe_available_from"),
                 pl.lit(None).cast(pl.Date).alias("name_available_from"),
             )
+        if industry_members is not None:
+            industries = self._industries(as_of_date, industry_members)
+            universe = (
+                universe.join(industries, on="ts_code", how="left")
+                .with_columns(
+                    pl.coalesce("historical_industry", "industry").alias("industry"),
+                    pl.max_horizontal(
+                        "universe_available_from",
+                        "industry_available_from",
+                    ).alias("universe_available_from"),
+                )
+                .drop("historical_industry")
+            )
+        else:
+            universe = universe.with_columns(
+                pl.lit(None).cast(pl.Date).alias("industry_available_from")
+            )
         missing_names = universe.filter(pl.col("name_available_from").is_null()).height
+        missing_industries = universe.filter(
+            pl.col("industry_available_from").is_null()
+        ).height
         warnings = []
         if missing_names:
             warnings.append(
                 f"{missing_names} universe securities have no effective-dated name record; "
                 "snapshot master name was used."
+            )
+        if missing_industries:
+            warnings.append(
+                f"{missing_industries} universe securities have no effective-dated "
+                "industry record; snapshot master industry was used."
             )
         if universe.is_empty():
             raise ValueError(
@@ -97,6 +124,7 @@ class PointInTimeUniverseBuilder:
             member_security_count=members.height,
             final_security_count=universe.height,
             missing_historical_names=missing_names,
+            missing_historical_industries=missing_industries,
             warnings=warnings,
         )
         return UniverseBuildResult(audit=audit, frame=universe)
@@ -215,4 +243,42 @@ class PointInTimeUniverseBuilder:
                 .alias("membership_available_from")
             ),
             membership_dates,
+        )
+
+    @staticmethod
+    def _industries(as_of_date: date, frame: pl.DataFrame) -> pl.DataFrame:
+        required = {"l1_name", "ts_code", "in_date", "out_date"}
+        if missing := required - set(frame.columns):
+            raise ValueError(
+                f"Industry members are missing point-in-time columns: "
+                f"{', '.join(sorted(missing))}"
+            )
+        availability = (
+            _date_expression("available_from")
+            if "available_from" in frame.columns
+            else _date_expression("in_date")
+        )
+        return (
+            frame.select(
+                pl.col("ts_code").cast(pl.String),
+                pl.col("l1_name").cast(pl.String).alias("historical_industry"),
+                _date_expression("in_date"),
+                _date_expression("out_date"),
+                availability.alias("industry_available_from"),
+            )
+            .filter(
+                (pl.col("in_date") <= as_of_date)
+                & (
+                    pl.col("out_date").is_null()
+                    | (pl.col("out_date") > as_of_date)
+                )
+                & (pl.col("industry_available_from") <= as_of_date)
+            )
+            .sort(["ts_code", "in_date", "industry_available_from"])
+            .unique(subset=["ts_code"], keep="last")
+            .select(
+                "ts_code",
+                "historical_industry",
+                "industry_available_from",
+            )
         )

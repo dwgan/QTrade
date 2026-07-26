@@ -79,6 +79,17 @@ SCHEMAS: dict[Dataset, DatasetSchema] = {
         primary_key=("index_code", "con_code", "trade_date"),
         sort_columns=("trade_date", "index_code", "con_code"),
     ),
+    Dataset.INDUSTRY_MEMBERS: DatasetSchema(
+        required_columns=(
+            "l1_code",
+            "l1_name",
+            "ts_code",
+            "in_date",
+            "out_date",
+        ),
+        primary_key=("l1_code", "ts_code", "in_date"),
+        sort_columns=("ts_code", "in_date", "l1_code"),
+    ),
     Dataset.DAILY_BASIC: DatasetSchema(
         required_columns=(
             "ts_code",

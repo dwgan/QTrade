@@ -64,6 +64,23 @@ class StockLimitClient:
         )
 
 
+class IndustryClient:
+    def index_classify(self, **kwargs):
+        assert kwargs == {"level": "L1", "src": "SW2021"}
+        return pd.DataFrame({"index_code": ["801010.SI", "801020.SI"]})
+
+    def index_member_all(self, **kwargs):
+        return pd.DataFrame(
+            {
+                "l1_code": [kwargs["l1_code"]],
+                "l1_name": ["Industry"],
+                "ts_code": ["000001.SZ"],
+                "in_date": ["20210101"],
+                "out_date": [None],
+            }
+        )
+
+
 def test_tushare_daily_adapter_converts_to_polars() -> None:
     provider = TushareProvider(
         ProviderConfig(request_pause_seconds=0),
@@ -118,6 +135,23 @@ def test_tushare_stock_limit_requests_required_fields() -> None:
         "up_limit",
         "down_limit",
     ]
+
+
+def test_tushare_fetches_effective_dated_industry_members() -> None:
+    provider = TushareProvider(
+        ProviderConfig(request_pause_seconds=0),
+        MarketConfig(),
+        client=IndustryClient(),
+    )
+
+    batch = provider.fetch(
+        Dataset.INDUSTRY_MEMBERS,
+        FetchRequest(as_of_date=date(2026, 7, 24)),
+    )
+
+    assert batch.frame.height == 4
+    assert batch.request["industry_codes"] == ["801010.SI", "801020.SI"]
+    assert batch.request["member_statuses"] == ["Y", "N"]
 
 
 def test_tushare_client_uses_optional_api_gateway(monkeypatch) -> None:

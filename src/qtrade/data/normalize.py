@@ -39,6 +39,8 @@ def _availability_expression(
             return pl.lit(as_of_date)
         if "list_date" in frame.columns:
             return _date_expression("list_date")
+    if dataset == Dataset.INDUSTRY_MEMBERS and "in_date" in frame.columns:
+        return _date_expression("in_date")
     date_columns = {
         Dataset.TRADE_CALENDAR: "cal_date",
         Dataset.DAILY_PRICES: "trade_date",

@@ -66,6 +66,29 @@ def test_store_reads_date_range(tmp_path: Path) -> None:
     assert result.get_column("adj_factor").to_list() == [1.0, 1.1]
 
 
+def test_store_reads_range_across_schema_evolution(tmp_path: Path) -> None:
+    store = ParquetDatasetStore(tmp_path, "curated")
+    first = _batch(1.0)
+    first.as_of_date = date(2026, 7, 23)
+    store.write(first)
+    second = _batch(1.1)
+    second.as_of_date = date(2026, 7, 24)
+    second.frame = second.frame.with_columns(
+        pl.lit("20260724").alias("available_from")
+    )
+    store.write(second)
+
+    result = store.read_range(
+        Dataset.ADJUST_FACTORS,
+        "fake",
+        date(2026, 7, 23),
+        date(2026, 7, 24),
+    )
+
+    assert result.height == 2
+    assert result.get_column("available_from").to_list() == [None, "20260724"]
+
+
 def test_store_reads_latest_partition_on_or_before_date(tmp_path: Path) -> None:
     store = ParquetDatasetStore(tmp_path, "curated")
     for day, factor in ((23, 1.0), (25, 1.2)):

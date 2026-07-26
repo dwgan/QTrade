@@ -12,6 +12,7 @@ dependencies = [
     "duckdb>=1.1",
     "polars>=1.10",
     "pydantic>=2.10",
+    "pytz>=2024.1",
     "PyYAML>=6.0",
     "tushare>=1.4",
 ]

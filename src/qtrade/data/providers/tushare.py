@@ -37,7 +37,8 @@ class TushareProvider:
             import tushare as ts
         except ImportError as exc:
             raise RuntimeError(
-                "Tushare is not installed. Install the project dependencies first."
+                "Tushare or one of its runtime dependencies is unavailable. "
+                "Install the project dependencies first."
             ) from exc
         client = ts.pro_api(self._config.token())
         if api_url := self._config.api_url():
@@ -90,6 +91,7 @@ class TushareProvider:
             Dataset.ADJUST_FACTORS: self._fetch_adjust_factors,
             Dataset.INDEX_DAILY: self._fetch_index_daily,
             Dataset.INDEX_MEMBERS: self._fetch_index_members,
+            Dataset.INDUSTRY_MEMBERS: self._fetch_industry_members,
             Dataset.DAILY_BASIC: self._fetch_daily_basic,
             Dataset.STOCK_LIMIT: self._fetch_stock_limit,
             Dataset.FINANCIAL_INDICATORS: self._fetch_financial_indicators,
@@ -169,6 +171,36 @@ class TushareProvider:
         ]
         frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
         return frame, params
+
+    def _fetch_industry_members(
+        self,
+        request: FetchRequest,
+    ) -> tuple[pl.DataFrame, dict[str, Any]]:
+        classifications = self._call(
+            self._client.index_classify,
+            level="L1",
+            src="SW2021",
+        )
+        if "index_code" not in classifications.columns:
+            raise ValueError("Industry classification response is missing index_code.")
+        industry_codes = classifications.get_column("index_code").drop_nulls().to_list()
+        frames = [
+            self._call(
+                self._client.index_member_all,
+                l1_code=code,
+                is_new=is_new,
+            )
+            for code in industry_codes
+            for is_new in ("Y", "N")
+        ]
+        frame = pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+        return frame, {
+            "classification": "SW2021",
+            "level": "L1",
+            "industry_codes": industry_codes,
+            "member_statuses": ["Y", "N"],
+            "as_of_date": self._date(request.as_of_date),
+        }
 
     def _fetch_daily_basic(self, request: FetchRequest) -> tuple[pl.DataFrame, dict[str, Any]]:
         fields = (

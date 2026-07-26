@@ -16,6 +16,7 @@ class Dataset(StrEnum):
     ADJUST_FACTORS = "adjust_factors"
     INDEX_DAILY = "index_daily"
     INDEX_MEMBERS = "index_members"
+    INDUSTRY_MEMBERS = "industry_members"
     DAILY_BASIC = "daily_basic"
     STOCK_LIMIT = "stock_limit"
     FINANCIAL_INDICATORS = "financial_indicators"
