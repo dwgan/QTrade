@@ -3,6 +3,7 @@ import subprocess
 import time
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -13,6 +14,7 @@ from qtrade.ui.application import (
     BacktestTaskManager,
     OverviewRepository,
     PipelineTaskManager,
+    SubprocessBacktestRunner,
     SubprocessPipelineRunner,
     WatchlistEditor,
     recent_quarter_ends,
@@ -168,6 +170,31 @@ def test_backtest_repository_loads_summary_and_downsampled_curve(
     assert result["summary"]["portfolio"]["total_return"] == 0.2
     assert len(result["curve"]) == 320
     assert result["curve"][0]["trade_date"] == "2020-01-01"
+
+
+def test_preparing_an_already_frozen_protocol_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = SubprocessBacktestRunner(
+        config_path=tmp_path / "base.yaml",
+        working_directory=tmp_path,
+        runtime_root=tmp_path / "runtime",
+    )
+    monkeypatch.setattr(
+        runner.protocols,
+        "load",
+        lambda _: SimpleNamespace(status=SimpleNamespace(value="frozen")),
+    )
+
+    exit_code, output, result_id = runner(
+        "prepare",
+        {"protocol_id": "quality_v1"},
+    )
+
+    assert exit_code == 0
+    assert "已经冻结" in output
+    assert result_id is None
 
 
 def test_recent_quarter_ends_includes_latest_completed_quarter() -> None:

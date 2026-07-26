@@ -521,7 +521,7 @@ class SubprocessBacktestRunner:
                 return exit_code, "\n\n".join(outputs), None
             protocol = self.protocols.load(protocol_id)
         if protocol.status.value == "frozen":
-            raise ValueError("该方案已经冻结，可以直接运行回测。")
+            return 0, "方案已经冻结，可以直接运行回测。", None
 
         for partition in self.PARTITIONS:
             commands = (
