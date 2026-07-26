@@ -95,6 +95,45 @@ class FinancialProvider:
         )
 
 
+class FinancialBackfillProvider:
+    name = "fake"
+
+    def fetch(self, dataset: Dataset, request: FetchRequest) -> DataBatch:
+        if dataset == Dataset.TRADE_CALENDAR:
+            frame = pl.DataFrame(
+                {
+                    "exchange": ["SSE", "SSE", "SSE", "SSE"],
+                    "cal_date": ["20260130", "20260131", "20260227", "20260228"],
+                    "is_open": [1, 0, 1, 0],
+                    "pretrade_date": ["20260129", "20260130", "20260226", "20260227"],
+                }
+            )
+        else:
+            assert dataset == Dataset.FINANCIAL_INDICATORS
+            assert request.periods[-1] == "20251231"
+            frame = pl.DataFrame(
+                {
+                    "ts_code": ["000001.SZ", "000001.SZ", "000002.SZ"],
+                    "ann_date": ["20260120", "20260215", "20260301"],
+                    "end_date": ["20250930", "20251231", "20251231"],
+                    "roe": [9.0, 10.0, 11.0],
+                    "roe_dt": [8.0, 9.0, 10.0],
+                    "roic": [7.0, 8.0, 9.0],
+                    "grossprofit_margin": [28.0, 30.0, 31.0],
+                    "netprofit_margin": [14.0, 15.0, 16.0],
+                    "ocfps": [0.9, 1.0, 1.1],
+                    "eps": [0.7, 0.8, 0.9],
+                    "debt_to_assets": [42.0, 40.0, 38.0],
+                }
+            )
+        return DataBatch(
+            dataset=dataset,
+            provider=self.name,
+            as_of_date=request.as_of_date,
+            frame=frame,
+        )
+
+
 class InvalidFinancialProvider(FinancialProvider):
     def fetch(self, dataset: Dataset, request: FetchRequest) -> DataBatch:
         batch = super().fetch(dataset, request)
@@ -225,6 +264,51 @@ def test_financial_snapshot_update_persists_requested_periods(tmp_path: Path) ->
     assert result.succeeded
     stored = service.curated_store.read(Dataset.FINANCIAL_INDICATORS, "fake", date(2026, 7, 24))
     assert stored.height == 1
+
+
+def test_financial_backfill_builds_point_in_time_month_end_snapshots(
+    tmp_path: Path,
+) -> None:
+    service = make_service(tmp_path, FinancialBackfillProvider())
+
+    result = service.backfill_financial_snapshots(
+        date(2026, 1, 1),
+        date(2026, 2, 28),
+        lookback_quarters=4,
+    )
+
+    january = service.curated_store.read(
+        Dataset.FINANCIAL_INDICATORS,
+        "fake",
+        date(2026, 1, 30),
+    )
+    february = service.curated_store.read(
+        Dataset.FINANCIAL_INDICATORS,
+        "fake",
+        date(2026, 2, 27),
+    )
+    assert result.trading_dates == 2
+    assert result.completed_dates == 2
+    assert january.get_column("end_date").to_list() == ["20250930"]
+    assert february.get_column("end_date").to_list() == ["20251231"]
+    assert "000002.SZ" not in february.get_column("ts_code").to_list()
+
+
+def test_financial_periods_include_configured_history() -> None:
+    periods = DataIngestionService.financial_periods(
+        date(2026, 1, 1),
+        date(2026, 7, 24),
+        lookback_quarters=4,
+    )
+
+    assert periods == (
+        "20250331",
+        "20250630",
+        "20250930",
+        "20251231",
+        "20260331",
+        "20260630",
+    )
 
 
 def test_manifest_merges_multiple_updates_for_same_date(tmp_path: Path) -> None:

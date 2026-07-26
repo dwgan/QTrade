@@ -212,6 +212,25 @@ def test_financial_snapshot_command_parses() -> None:
     assert args.periods == "20250331,20250630"
 
 
+def test_financial_backfill_command_parses() -> None:
+    args = build_parser().parse_args(
+        [
+            "data",
+            "financial-backfill",
+            "--start",
+            "2015-01-01",
+            "--end",
+            "2026-07-24",
+            "--lookback-quarters",
+            "8",
+        ]
+    )
+
+    assert args.data_command == "financial-backfill"
+    assert args.start == date(2015, 1, 1)
+    assert args.lookback_quarters == 8
+
+
 def test_invalid_financial_period_is_rejected_before_provider_setup() -> None:
     assert (
         main(

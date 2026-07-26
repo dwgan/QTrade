@@ -108,9 +108,14 @@ qtrade data backfill `
   --end 2026-07-24 `
   --datasets daily_basic `
   --frequency month_end
+
+qtrade data financial-backfill `
+  --start 2015-01-01 `
+  --end 2026-07-24 `
+  --lookback-quarters 12
 ```
 
-指数行情按指数整段抓取；月末策略的估值数据只抓取每月最后一个交易日。
+指数行情按指数整段抓取；月末策略的估值数据只抓取每月最后一个交易日。财务历史回填先批量读取季度数据，再按公告后的可用日期重建各月末快照；每个快照只保留当时已知的最新一期，不能把后来公告的数据带回过去。命令支持断点续跑。
 
 生成市场分析：
 

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import uuid
+from calendar import monthrange
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -390,6 +391,145 @@ class DataIngestionService:
             )
         write_validation_reports(self.reports_root, as_of_date, result.reports)
         self._write_manifest(result)
+        return result
+
+    @staticmethod
+    def financial_periods(
+        start_date: date,
+        end_date: date,
+        lookback_quarters: int = 12,
+    ) -> tuple[str, ...]:
+        if start_date > end_date:
+            raise ValueError("Financial backfill start date must not be after end date.")
+        if lookback_quarters < 1:
+            raise ValueError("Financial lookback quarters must be positive.")
+        start_quarter = start_date.year * 4 + (start_date.month - 1) // 3
+        end_quarter = end_date.year * 4 + (end_date.month - 1) // 3
+        periods: list[str] = []
+        for quarter_index in range(
+            start_quarter - lookback_quarters,
+            end_quarter + 1,
+        ):
+            year, zero_based_quarter = divmod(quarter_index, 4)
+            month = (zero_based_quarter + 1) * 3
+            period_date = date(year, month, monthrange(year, month)[1])
+            if period_date <= end_date:
+                periods.append(period_date.strftime("%Y%m%d"))
+        return tuple(periods)
+
+    def backfill_financial_snapshots(
+        self,
+        start_date: date,
+        end_date: date,
+        lookback_quarters: int = 12,
+    ) -> BackfillResult:
+        periods = self.financial_periods(
+            start_date,
+            end_date,
+            lookback_quarters,
+        )
+        calendar_batch = self.provider.fetch(
+            Dataset.TRADE_CALENDAR,
+            FetchRequest(
+                as_of_date=end_date,
+                start_date=start_date,
+                end_date=end_date,
+            ),
+        )
+        calendar = normalize_dataset(
+            Dataset.TRADE_CALENDAR,
+            calendar_batch.frame,
+            end_date,
+        )
+        if {"cal_date", "is_open"} - set(calendar.columns):
+            raise ValueError("Trade calendar is missing cal_date or is_open.")
+        open_dates = (
+            calendar.with_columns(
+                pl.col("cal_date")
+                .cast(pl.String)
+                .str.replace_all("-", "")
+                .str.strptime(pl.Date, "%Y%m%d", strict=False),
+                pl.col("is_open").cast(pl.Int8, strict=False),
+            )
+            .filter(
+                (pl.col("is_open") == 1)
+                & pl.col("cal_date").is_between(start_date, end_date)
+            )
+            .get_column("cal_date")
+            .to_list()
+        )
+        month_ends: dict[tuple[int, int], date] = {}
+        for trading_date in open_dates:
+            month_ends[(trading_date.year, trading_date.month)] = trading_date
+        snapshot_dates = list(month_ends.values())
+        result = BackfillResult(
+            start_date,
+            end_date,
+            trading_dates=len(snapshot_dates),
+        )
+        pending_dates = [
+            snapshot_date
+            for snapshot_date in snapshot_dates
+            if not self.curated_store.exists(
+                Dataset.FINANCIAL_INDICATORS,
+                self.provider.name,
+                snapshot_date,
+            )
+        ]
+        result.skipped_dates = len(snapshot_dates) - len(pending_dates)
+        if not pending_dates:
+            return result
+
+        raw_batch = self.provider.fetch(
+            Dataset.FINANCIAL_INDICATORS,
+            FetchRequest(as_of_date=end_date, periods=periods),
+        )
+        self.raw_store.write(raw_batch)
+        normalized = normalize_dataset(
+            Dataset.FINANCIAL_INDICATORS,
+            raw_batch.frame,
+            end_date,
+        )
+        if "available_from" not in normalized.columns:
+            raise ValueError("Financial indicators are missing available_from.")
+        prepared = normalized.with_columns(
+            pl.col("available_from")
+            .cast(pl.String)
+            .str.replace_all("-", "")
+            .str.strptime(pl.Date, "%Y%m%d", strict=False)
+            .alias("_available_date")
+        )
+        for snapshot_date in pending_dates:
+            snapshot = (
+                prepared.filter(pl.col("_available_date") <= snapshot_date)
+                .sort(["ts_code", "_available_date", "end_date"])
+                .unique(subset=["ts_code"], keep="last")
+                .drop("_available_date")
+            )
+            report = self.validator.validate(
+                Dataset.FINANCIAL_INDICATORS,
+                snapshot_date,
+                snapshot,
+            )
+            if not report.passed:
+                result.failed_dates.append(snapshot_date)
+                continue
+            self.curated_store.write(
+                DataBatch(
+                    dataset=Dataset.FINANCIAL_INDICATORS,
+                    provider=raw_batch.provider,
+                    as_of_date=snapshot_date,
+                    frame=snapshot,
+                    fetched_at=raw_batch.fetched_at,
+                    request={
+                        **raw_batch.request,
+                        "normalized": True,
+                        "reconstructed_as_of": snapshot_date.isoformat(),
+                        "latest_per_security": True,
+                    },
+                )
+            )
+            result.completed_dates += 1
         return result
 
     def validate_existing(

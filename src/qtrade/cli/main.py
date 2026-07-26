@@ -222,6 +222,18 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Comma-separated quarter-end dates in YYYYMMDD format",
     )
+    financial_backfill = data_commands.add_parser(
+        "financial-backfill",
+        help="Reconstruct point-in-time month-end financial snapshots",
+    )
+    financial_backfill.add_argument("--start", required=True, type=parse_date)
+    financial_backfill.add_argument("--end", required=True, type=parse_date)
+    financial_backfill.add_argument(
+        "--lookback-quarters",
+        type=int,
+        default=12,
+        help="Number of quarters fetched before the first snapshot (default: 12)",
+    )
 
     data_commands.add_parser("datasets", help="List supported datasets")
 
@@ -775,8 +787,26 @@ def run(args: argparse.Namespace) -> int:
             result = service.update_financial_indicators(args.date, periods)
             _print_update(result)
             return 0 if result.succeeded else 1
+        if args.data_command == "financial-backfill":
+            result = service.backfill_financial_snapshots(
+                args.start,
+                args.end,
+                args.lookback_quarters,
+            )
+            print(
+                f"Financial snapshots: {result.trading_dates}; completed: "
+                f"{result.completed_dates}; skipped: {result.skipped_dates}; "
+                f"failed: {len(result.failed_dates)}"
+            )
+            if result.failed_dates:
+                print(
+                    "Failed dates: "
+                    + ", ".join(value.isoformat() for value in result.failed_dates),
+                    file=sys.stderr,
+                )
+            return 0 if result.succeeded else 1
 
-    except (FileNotFoundError, RuntimeError) as exc:
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
