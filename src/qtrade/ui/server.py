@@ -31,7 +31,12 @@ class UiApplication:
         self.repository = OverviewRepository(config.paths.reports)
         self.watchlist = WatchlistEditor(config_path)
         self.tasks = PipelineTaskManager(
-            SubprocessPipelineRunner(config_path, Path.cwd())
+            SubprocessPipelineRunner(
+                config_path=config_path,
+                working_directory=Path.cwd(),
+                curated_root=config.paths.curated,
+                provider=config.provider.name,
+            )
         )
 
     def meta(self) -> dict[str, Any]:

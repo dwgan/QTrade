@@ -157,6 +157,16 @@ class TaskSnapshot:
 PipelineRunner = Callable[[date, bool], tuple[int, str]]
 
 
+def recent_quarter_ends(as_of_date: date, count: int = 5) -> tuple[str, ...]:
+    values = [
+        date(year, month, day)
+        for year in range(as_of_date.year - 2, as_of_date.year + 1)
+        for month, day in ((3, 31), (6, 30), (9, 30), (12, 31))
+        if date(year, month, day) <= as_of_date
+    ]
+    return tuple(value.strftime("%Y%m%d") for value in sorted(values, reverse=True)[:count])
+
+
 class PipelineTaskManager:
     def __init__(self, runner: PipelineRunner) -> None:
         self.runner = runner
@@ -168,6 +178,9 @@ class PipelineTaskManager:
             return asdict(self._snapshot)
 
     def start(self, as_of_date: date, skip_data: bool) -> dict[str, Any]:
+        validator = getattr(self.runner, "validate", None)
+        if validator is not None:
+            validator(as_of_date, skip_data)
         with self._lock:
             if self._snapshot.state == "running":
                 raise RuntimeError("已有任务正在运行，请等待完成。")
@@ -203,12 +216,78 @@ class PipelineTaskManager:
 
 
 class SubprocessPipelineRunner:
-    def __init__(self, config_path: Path, working_directory: Path) -> None:
+    DAILY_INPUTS = (
+        "daily_prices",
+        "adjust_factors",
+        "index_daily",
+        "daily_basic",
+        "stock_limit",
+    )
+
+    def __init__(
+        self,
+        config_path: Path,
+        working_directory: Path,
+        curated_root: Path,
+        provider: str,
+    ) -> None:
         self.config_path = Path(config_path).resolve()
         self.working_directory = Path(working_directory).resolve()
+        self.curated_root = Path(curated_root).resolve()
+        self.provider = provider
+
+    def validate(self, as_of_date: date, skip_data: bool) -> None:
+        if as_of_date > date.today():
+            raise ValueError(
+                f"{as_of_date.isoformat()} 尚未到来，请选择已经收盘的交易日。"
+            )
+        if as_of_date.weekday() >= 5:
+            raise ValueError(
+                f"{as_of_date.isoformat()} 是周末，请选择已经收盘的交易日。"
+            )
+        if not skip_data:
+            return
+        missing = [
+            dataset
+            for dataset in self.DAILY_INPUTS
+            if not self._exact_partition_exists(dataset, as_of_date)
+        ]
+        if not self._latest_partition_exists("security_master", as_of_date):
+            missing.append("security_master")
+        if not self._latest_partition_exists("financial_indicators", as_of_date):
+            missing.append("financial_indicators")
+        if missing:
+            names = ", ".join(missing)
+            raise ValueError(
+                f"{as_of_date.isoformat()} 缺少本地分析数据：{names}。"
+                "请先点击“更新数据并分析”。"
+            )
 
     def __call__(self, as_of_date: date, skip_data: bool) -> tuple[int, str]:
-        command = [
+        outputs: list[str] = []
+        if not skip_data and not self._exact_partition_exists(
+            "financial_indicators", as_of_date
+        ):
+            periods = ",".join(recent_quarter_ends(as_of_date))
+            financial_command = [
+                sys.executable,
+                "-m",
+                "qtrade",
+                "--config",
+                str(self.config_path),
+                "data",
+                "financials",
+                "--date",
+                as_of_date.isoformat(),
+                "--periods",
+                periods,
+            ]
+            exit_code, output = self._execute(financial_command)
+            outputs.append("准备财务快照：\n" + output)
+            if exit_code != 0:
+                return exit_code, "\n\n".join(outputs)
+
+        pipeline_command = [
             sys.executable,
             "-m",
             "qtrade",
@@ -220,7 +299,12 @@ class SubprocessPipelineRunner:
             as_of_date.isoformat(),
         ]
         if skip_data:
-            command.append("--skip-data")
+            pipeline_command.append("--skip-data")
+        exit_code, output = self._execute(pipeline_command)
+        outputs.append("运行日终分析：\n" + output)
+        return exit_code, "\n\n".join(outputs)
+
+    def _execute(self, command: list[str]) -> tuple[int, str]:
         result = subprocess.run(
             command,
             cwd=self.working_directory,
@@ -235,3 +319,26 @@ class SubprocessPipelineRunner:
             value.strip() for value in (result.stdout, result.stderr) if value.strip()
         )
         return result.returncode, output
+
+    def _partition_root(self, dataset: str) -> Path:
+        return self.curated_root / dataset / f"provider={self.provider}"
+
+    def _exact_partition_exists(self, dataset: str, as_of_date: date) -> bool:
+        return (
+            self._partition_root(dataset)
+            / f"as_of_date={as_of_date.isoformat()}"
+            / "data.parquet"
+        ).is_file()
+
+    def _latest_partition_exists(self, dataset: str, as_of_date: date) -> bool:
+        root = self._partition_root(dataset)
+        if not root.exists():
+            return False
+        for item in root.glob("as_of_date=*"):
+            try:
+                partition_date = date.fromisoformat(item.name.removeprefix("as_of_date="))
+            except ValueError:
+                continue
+            if partition_date <= as_of_date and (item / "data.parquet").is_file():
+                return True
+        return False
