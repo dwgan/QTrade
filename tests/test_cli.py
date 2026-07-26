@@ -57,6 +57,24 @@ def test_factor_research_command_parses() -> None:
     assert args.horizon == 20
 
 
+def test_historical_signal_build_command_parses() -> None:
+    args = build_parser().parse_args(
+        [
+            "research",
+            "build-signals",
+            "--protocol",
+            "quality_v1",
+            "--partition",
+            "development",
+            "--frequency",
+            "month_end",
+        ]
+    )
+
+    assert args.research_command == "build-signals"
+    assert args.frequency == "month_end"
+
+
 def test_candidate_backtest_command_parses() -> None:
     args = build_parser().parse_args(
         [
@@ -125,6 +143,7 @@ def test_protocol_create_command_parses() -> None:
 
     assert args.protocol_command == "create"
     assert args.protocol_id == "quality_v1"
+    assert args.signal_frequency == "month_end"
 
 
 def test_protocol_pin_data_command_parses() -> None:

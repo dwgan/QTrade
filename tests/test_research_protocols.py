@@ -45,7 +45,10 @@ def make_protocol(protocol_id: str = "quality_v1") -> StrategyProtocol:
                 end_date=date(2024, 12, 31),
             ),
         ],
-        strategy={"factors": {"quality": 1.0}},
+        strategy={
+            "signal_frequency": "month_end",
+            "factors": {"quality": 1.0},
+        },
         execution={"rule": "T+1"},
         acceptance_criteria={"positive_excess": True},
         code_commit="abc123",

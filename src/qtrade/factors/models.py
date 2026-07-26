@@ -32,6 +32,9 @@ class FactorAnalysis(BaseModel):
     as_of_date: date
     created_at: datetime = Field(default_factory=datetime.now)
     signal_origin: SignalOrigin = SignalOrigin.RECONSTRUCTED
+    protocol_id: str | None = None
+    code_commit: str | None = None
+    config_hash: str | None = None
     daily_basic_snapshot_date: date
     financial_snapshot_date: date
     security_master_snapshot_date: date

@@ -30,6 +30,7 @@ from qtrade.research.protocols import (
     git_research_tree_is_clean,
 )
 from qtrade.research.service import ResearchService
+from qtrade.research.signals import HistoricalSignalBuildService, SignalFrequency
 
 
 def parse_date(value: str) -> date:
@@ -128,6 +129,19 @@ def research_config_hash(config: AppConfig) -> str:
     )
 
 
+def build_historical_signal_service(
+    config: AppConfig,
+) -> HistoricalSignalBuildService:
+    return HistoricalSignalBuildService(
+        factor_service=build_factor_service(config),
+        curated_store=ParquetDatasetStore(config.paths.curated, "curated"),
+        provider=config.provider.name,
+        protocol_store=ProtocolStore(config.paths.runtime),
+        project_root=config.project_root,
+        config_hash=research_config_hash(config),
+    )
+
+
 def build_observation_service(config: AppConfig) -> ObservationService:
     config.paths.create()
     return ObservationService(
@@ -223,6 +237,25 @@ def build_parser() -> argparse.ArgumentParser:
     factor_research.add_argument("--end", required=True, type=parse_date)
     factor_research.add_argument("--horizon", type=int)
     factor_research.add_argument("--quantiles", type=int)
+    build_signals = research_commands.add_parser(
+        "build-signals",
+        help="Reconstruct immutable month-end or week-end signals for a protocol",
+    )
+    build_signals.add_argument("--protocol", required=True, dest="protocol_id")
+    build_signals.add_argument(
+        "--partition",
+        required=True,
+        choices=[
+            PartitionName.DEVELOPMENT.value,
+            PartitionName.VALIDATION.value,
+            PartitionName.HOLDOUT.value,
+        ],
+    )
+    build_signals.add_argument(
+        "--frequency",
+        choices=[item.value for item in SignalFrequency],
+        default=SignalFrequency.MONTH_END.value,
+    )
 
     protocol = commands.add_parser("protocol", help="Anti-overfitting research protocols")
     protocol_commands = protocol.add_subparsers(
@@ -241,6 +274,11 @@ def build_parser() -> argparse.ArgumentParser:
     protocol_create.add_argument("--holdout-start", required=True, type=parse_date)
     protocol_create.add_argument("--holdout-end", required=True, type=parse_date)
     protocol_create.add_argument("--allowed-trials", type=int, default=1)
+    protocol_create.add_argument(
+        "--signal-frequency",
+        choices=[item.value for item in SignalFrequency],
+        default=SignalFrequency.MONTH_END.value,
+    )
     protocol_create.add_argument("--parent")
     protocol_freeze = protocol_commands.add_parser(
         "freeze", help="Freeze a draft protocol and calculate its immutable hash"
@@ -399,6 +437,7 @@ def run(args: argparse.Namespace) -> int:
                     partitions=partitions,
                     strategy={
                         "universe": "historical configured A-share universe",
+                        "signal_frequency": args.signal_frequency,
                         "factors": config.factors.model_dump(mode="json"),
                         "research": config.research.model_dump(mode="json"),
                     },
@@ -568,6 +607,21 @@ def run(args: argparse.Namespace) -> int:
 
     if args.command in {"research", "backtest"}:
         try:
+            if (
+                args.command == "research"
+                and args.research_command == "build-signals"
+            ):
+                result = build_historical_signal_service(config).build(
+                    args.protocol_id,
+                    PartitionName(args.partition),
+                    SignalFrequency(args.frequency),
+                )
+                print(
+                    f"Built {len(result.signals)}/{result.requested_dates} "
+                    f"{result.frequency.value} signals for "
+                    f"{result.protocol_id}/{result.partition.value}."
+                )
+                return 0 if result.signals else 1
             if args.command == "research":
                 updates = {}
                 if args.horizon is not None:

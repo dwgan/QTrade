@@ -44,6 +44,9 @@ class FactorAnalysisService:
         self,
         as_of_date: date,
         signal_origin: SignalOrigin | str = SignalOrigin.RECONSTRUCTED,
+        protocol_id: str | None = None,
+        code_commit: str | None = None,
+        config_hash: str | None = None,
     ) -> FactorAnalysisResult:
         signal_origin = SignalOrigin(signal_origin)
         start_date = as_of_date - timedelta(days=self.config.history_calendar_days)
@@ -104,6 +107,9 @@ class FactorAnalysisService:
         )
         computation.analysis.warnings.extend(universe.audit.warnings)
         computation.analysis.signal_origin = signal_origin
+        computation.analysis.protocol_id = protocol_id
+        computation.analysis.code_commit = code_commit
+        computation.analysis.config_hash = config_hash
         json_path, markdown_path, rankings_path = self.reporter.write(computation)
         return FactorAnalysisResult(
             computation.analysis,
