@@ -3,6 +3,9 @@ const state = {
   overview: null,
   candidates: [],
   taskTimer: null,
+  backtestMeta: null,
+  selectedPartition: null,
+  backtestTimer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -228,6 +231,253 @@ function renderOverview(value) {
   renderPipeline(value.pipeline, value.quality);
 }
 
+function selectedProtocol() {
+  const protocolId = $("protocolSelect").value;
+  return (state.backtestMeta?.protocols || []).find((item) => item.protocol_id === protocolId);
+}
+
+function renderProtocol() {
+  const protocol = selectedProtocol();
+  const existing = Boolean(protocol);
+  const fields = [
+    "protocolId", "protocolTitle", "protocolHypothesis",
+    "developmentStart", "developmentEnd", "validationStart",
+    "validationEnd", "holdoutStart", "holdoutEnd", "allowedTrials",
+  ];
+  fields.forEach((id) => $(id).disabled = existing);
+  $("protocolSummary").classList.toggle("hidden", !existing);
+  if (existing) {
+    $("protocolId").value = protocol.protocol_id;
+    $("protocolTitle").value = protocol.title;
+    $("protocolHypothesis").value = protocol.hypothesis;
+    ["development", "validation", "holdout"].forEach((name) => {
+      const partition = protocol.partitions[name];
+      $(`${name}Start`).value = partition?.start_date || "";
+      $(`${name}End`).value = partition?.end_date || "";
+    });
+    $("allowedTrials").value = protocol.allowed_trials;
+    $("protocolSummary").innerHTML = `
+      <h3>${escapeHtml(protocol.title)}</h3>
+      <p>${escapeHtml(protocol.hypothesis)}</p>
+      <p>状态：<strong>${protocol.status === "frozen" ? "已冻结，可运行正式回测" : "草稿，历史信号尚未全部固定"}</strong></p>
+      <p>验证集已运行 ${escapeHtml(protocol.trial_counts.validation || 0)} / ${escapeHtml(protocol.allowed_trials)} 次 ·
+      封存集${protocol.holdout_revealed ? "已经揭晓" : "仍未揭晓"}</p>`;
+  }
+  const frozen = protocol?.status === "frozen";
+  $("prepareBacktest").disabled = frozen;
+  $("prepareBacktest").textContent = existing ? (frozen ? "方案已经准备完成" : "继续准备并冻结") : "创建方案并准备历史信号";
+  $("backtestMode").textContent = protocol
+    ? `${protocol.protocol_id} · ${frozen ? "正式验证" : "草稿"}`
+    : "创建新方案";
+  ["development", "validation", "holdout"].forEach((name) => {
+    const partition = protocol?.partitions[name];
+    $(`${name}Range`).textContent = partition
+      ? `${partition.start_date} → ${partition.end_date}` : "—";
+    const button = document.querySelector(`.partition-button[data-partition="${name}"]`);
+    button.disabled = !frozen;
+    button.classList.remove("selected");
+  });
+  state.selectedPartition = null;
+  $("runBacktest").disabled = true;
+  $("holdoutConfirmRow").classList.add("hidden");
+  $("holdoutConfirm").checked = false;
+}
+
+async function loadBacktestMeta(selectProtocolId = null) {
+  const meta = await api("/api/backtest/meta");
+  state.backtestMeta = meta;
+  const select = $("protocolSelect");
+  const previous = selectProtocolId || select.value;
+  select.innerHTML = `<option value="">创建新方案</option>` + meta.protocols.map(
+    (item) => `<option value="${escapeHtml(item.protocol_id)}">${escapeHtml(item.title)} · ${item.status === "frozen" ? "已冻结" : "草稿"}</option>`
+  ).join("");
+  if (previous && meta.protocols.some((item) => item.protocol_id === previous)) select.value = previous;
+  const completed = meta.results.filter((item) => item.has_result);
+  $("backtestResultSelect").innerHTML = completed.length
+    ? `<option value="">选择已有结果</option>` + completed.map((item) =>
+      `<option value="${escapeHtml(item.experiment_id)}">${escapeHtml(item.protocol_id || "探索")} · ${escapeHtml(item.partition)} · ${escapeHtml(item.start_date)} 至 ${escapeHtml(item.end_date)}</option>`
+    ).join("")
+    : `<option value="">暂无结果</option>`;
+  renderProtocol();
+}
+
+function backtestPayload() {
+  return {
+    protocol_id: $("protocolId").value.trim(),
+    title: $("protocolTitle").value.trim(),
+    hypothesis: $("protocolHypothesis").value.trim(),
+    development_start: $("developmentStart").value,
+    development_end: $("developmentEnd").value,
+    validation_start: $("validationStart").value,
+    validation_end: $("validationEnd").value,
+    holdout_start: $("holdoutStart").value,
+    holdout_end: $("holdoutEnd").value,
+    allowed_trials: Number($("allowedTrials").value),
+  };
+}
+
+async function prepareBacktest() {
+  const payload = backtestPayload();
+  if (!payload.protocol_id || !payload.title || !payload.hypothesis) {
+    return toast("请完整填写方案 ID、名称和研究假设。", true);
+  }
+  try {
+    await api("/api/backtest/prepare", { method: "POST", body: JSON.stringify(payload) });
+    setBacktestButtons(false);
+    updateBacktestTask({ state: "running", action: "prepare", protocol_id: payload.protocol_id, output: "" });
+    pollBacktestTask();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function selectPartition(partition) {
+  state.selectedPartition = partition;
+  document.querySelectorAll(".partition-button").forEach(
+    (button) => button.classList.toggle("selected", button.dataset.partition === partition)
+  );
+  $("holdoutConfirmRow").classList.toggle("hidden", partition !== "holdout");
+  $("holdoutConfirm").checked = false;
+  $("runBacktest").disabled = partition === "holdout";
+}
+
+async function runBacktest() {
+  const protocol = selectedProtocol();
+  if (!protocol || !state.selectedPartition) return toast("请先选择已冻结方案和回测区间。", true);
+  const holdout = state.selectedPartition === "holdout";
+  if (holdout && !$("holdoutConfirm").checked) return toast("揭晓封存集前必须勾选确认。", true);
+  try {
+    await api("/api/backtest/run", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol_id: protocol.protocol_id,
+        partition: state.selectedPartition,
+        confirm_holdout: holdout && $("holdoutConfirm").checked,
+      }),
+    });
+    setBacktestButtons(false);
+    updateBacktestTask({
+      state: "running", action: "run", protocol_id: protocol.protocol_id,
+      partition: state.selectedPartition, output: "",
+    });
+    pollBacktestTask();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function setBacktestButtons(enabled) {
+  $("prepareBacktest").disabled = !enabled || selectedProtocol()?.status === "frozen";
+  document.querySelectorAll(".partition-button").forEach(
+    (button) => button.disabled = !enabled || selectedProtocol()?.status !== "frozen"
+  );
+  $("runBacktest").disabled = !enabled || !state.selectedPartition ||
+    (state.selectedPartition === "holdout" && !$("holdoutConfirm").checked);
+}
+
+function updateBacktestTask(task) {
+  const banner = $("backtestTask");
+  banner.classList.remove("hidden", "success", "failure");
+  $("backtestLog").textContent = task.output || "任务已启动。准备历史信号可能需要几分钟，请保持页面打开。";
+  if (task.state === "running") {
+    $("backtestTaskTitle").textContent = task.action === "prepare" ? "正在准备防作弊回测方案" : "正在运行策略回测";
+    $("backtestTaskDetail").textContent = `${task.protocol_id || ""}${task.partition ? ` · ${task.partition}` : ""}`;
+    return;
+  }
+  const success = task.state === "completed";
+  banner.classList.add(success ? "success" : "failure");
+  $("backtestTaskTitle").textContent = success ? "回测任务完成" : "回测任务失败";
+  $("backtestTaskDetail").textContent = task.finished_at || "";
+}
+
+async function pollBacktestTask() {
+  window.clearTimeout(state.backtestTimer);
+  try {
+    const task = await api("/api/backtest/task");
+    if (task.state === "idle") return;
+    updateBacktestTask(task);
+    if (task.state === "running") {
+      setBacktestButtons(false);
+      state.backtestTimer = window.setTimeout(pollBacktestTask, 1500);
+      return;
+    }
+    setBacktestButtons(true);
+    await loadBacktestMeta(task.protocol_id);
+    if (task.result_id && task.state === "completed") {
+      $("backtestResultSelect").value = task.result_id;
+      await loadBacktestResult(task.result_id);
+    }
+    toast(task.state === "completed" ? "回测任务已完成。" : "回测失败，请查看日志。", task.state !== "completed");
+  } catch (error) {
+    setBacktestButtons(true);
+    toast(error.message, true);
+  }
+}
+
+function renderEquityChart(curve) {
+  const svg = $("equityChart");
+  if (!curve.length) {
+    svg.innerHTML = `<text x="450" y="140" text-anchor="middle" class="chart-label">没有权益曲线数据</text>`;
+    return;
+  }
+  const portfolioBase = Number(curve[0].equity) || 1;
+  const benchmarkBase = Number(curve[0].benchmark_equity) || 1;
+  const rows = curve.map((item) => ({
+    date: item.trade_date,
+    portfolio: Number(item.equity) / portfolioBase,
+    benchmark: Number(item.benchmark_equity) / benchmarkBase,
+  }));
+  const values = rows.flatMap((item) => [item.portfolio, item.benchmark]);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(max - min, .01);
+  const point = (value, index) => `${40 + index * 830 / Math.max(rows.length - 1, 1)},${20 + (max - value) * 220 / span}`;
+  const portfolio = rows.map((item, index) => point(item.portfolio, index)).join(" ");
+  const benchmark = rows.map((item, index) => point(item.benchmark, index)).join(" ");
+  svg.innerHTML = `
+    <line x1="40" y1="20" x2="40" y2="240" class="chart-grid"/>
+    <line x1="40" y1="240" x2="870" y2="240" class="chart-grid"/>
+    <line x1="40" y1="130" x2="870" y2="130" class="chart-grid"/>
+    <polyline points="${portfolio}" class="chart-portfolio"/>
+    <polyline points="${benchmark}" class="chart-benchmark"/>
+    <text x="40" y="263" class="chart-label">${escapeHtml(rows[0].date)}</text>
+    <text x="870" y="263" text-anchor="end" class="chart-label">${escapeHtml(rows[rows.length - 1].date)}</text>
+    <text x="34" y="24" text-anchor="end" class="chart-label">${max.toFixed(2)}</text>
+    <text x="34" y="243" text-anchor="end" class="chart-label">${min.toFixed(2)}</text>`;
+}
+
+async function loadBacktestResult(experimentId) {
+  if (!experimentId) {
+    $("backtestEmpty").classList.remove("hidden");
+    $("backtestResultContent").classList.add("hidden");
+    return;
+  }
+  try {
+    const result = await api(`/api/backtest/result?id=${encodeURIComponent(experimentId)}`);
+    const summary = result.summary;
+    $("backtestEmpty").classList.add("hidden");
+    $("backtestResultContent").classList.remove("hidden");
+    $("btTotalReturn").textContent = pct(summary.portfolio?.total_return, 2);
+    $("btBenchmarkReturn").textContent = `基准 ${pct(summary.benchmark?.total_return, 2)}`;
+    $("btAnnualReturn").textContent = pct(summary.portfolio?.annualized_return, 2);
+    $("btSharpe").textContent = `Sharpe ${num(summary.portfolio?.sharpe_ratio, 2)}`;
+    $("btDrawdown").textContent = pct(summary.portfolio?.max_drawdown, 2);
+    $("btBenchmarkDrawdown").textContent = `基准 ${pct(summary.benchmark?.max_drawdown, 2)}`;
+    $("btRebalances").textContent = text(summary.rebalance_count);
+    $("btCosts").textContent = `累计成本 ${num(summary.total_cost, 0)}`;
+    renderEquityChart(result.curve || []);
+    $("backtestAudit").innerHTML = `
+      <strong>${summary.protocol_id ? "正式验证回测" : "探索性回测"}</strong> ·
+      ${escapeHtml(summary.start_date)} 至 ${escapeHtml(summary.end_date)} ·
+      时间泄漏审计：${summary.leakage_audit_passed ? "通过" : "未通过"} ·
+      信号版本 ${Object.keys(summary.signal_versions || {}).length} 个 ·
+      受限买入/卖出 ${escapeHtml(summary.blocked_buy_orders)}/${escapeHtml(summary.blocked_sell_orders)}。
+      <br>回测尚未模拟整手、成交容量和盘中价格路径，结果不构成投资建议。`;
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
 async function loadOverview(dateValue) {
   if (!dateValue) return;
   try {
@@ -348,6 +598,15 @@ function bindEvents() {
   $("candidateSearch").addEventListener("input", renderCandidates);
   $("candidateLimit").addEventListener("change", renderCandidates);
   $("toggleLog").addEventListener("click", () => $("taskLog").classList.toggle("hidden"));
+  $("protocolSelect").addEventListener("change", renderProtocol);
+  $("prepareBacktest").addEventListener("click", prepareBacktest);
+  document.querySelectorAll(".partition-button").forEach(
+    (button) => button.addEventListener("click", () => selectPartition(button.dataset.partition))
+  );
+  $("holdoutConfirm").addEventListener("change", () => setBacktestButtons(true));
+  $("runBacktest").addEventListener("click", runBacktest);
+  $("toggleBacktestLog").addEventListener("click", () => $("backtestLog").classList.toggle("hidden"));
+  $("backtestResultSelect").addEventListener("change", (event) => loadBacktestResult(event.target.value));
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => {
       document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active"));
@@ -361,12 +620,21 @@ async function init() {
   bindEvents();
   try {
     await loadMeta(true);
+    await loadBacktestMeta();
     const task = await api("/api/task");
     if (task.state !== "idle") {
       updateTask(task);
       if (task.state === "running") {
         setRunButtons(false);
         pollTask();
+      }
+    }
+    const backtestTask = await api("/api/backtest/task");
+    if (backtestTask.state !== "idle") {
+      updateBacktestTask(backtestTask);
+      if (backtestTask.state === "running") {
+        setBacktestButtons(false);
+        pollBacktestTask();
       }
     }
   } catch (error) {

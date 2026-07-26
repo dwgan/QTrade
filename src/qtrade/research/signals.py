@@ -131,11 +131,9 @@ class HistoricalSignalBuildService:
         end_date: date,
         frequency: SignalFrequency,
     ) -> list[date]:
-        calendar = self.curated_store.read_range(
+        calendar = self.curated_store.read_all(
             Dataset.TRADE_CALENDAR,
             self.provider,
-            start_date,
-            end_date,
         )
         required = {"cal_date", "is_open"}
         if missing := required - set(calendar.columns):

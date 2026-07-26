@@ -13,6 +13,10 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+import polars as pl
+
+from qtrade.research.protocols import ExperimentStore, PartitionName, ProtocolStore
+
 REPORT_NAMES = (
     "market",
     "industry",
@@ -213,6 +217,411 @@ class PipelineTaskManager:
             self._snapshot.exit_code = exit_code
             self._snapshot.output = output[-12000:]
             self._snapshot.finished_at = datetime.now().isoformat(timespec="seconds")
+
+
+@dataclass
+class BacktestTaskSnapshot:
+    id: str | None = None
+    state: str = "idle"
+    action: str | None = None
+    protocol_id: str | None = None
+    partition: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    exit_code: int | None = None
+    output: str = ""
+    result_id: str | None = None
+
+
+BacktestRunner = Callable[[str, dict[str, Any]], tuple[int, str, str | None]]
+
+
+class BacktestTaskManager:
+    def __init__(self, runner: BacktestRunner) -> None:
+        self.runner = runner
+        self._lock = threading.Lock()
+        self._snapshot = BacktestTaskSnapshot()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return asdict(self._snapshot)
+
+    def start(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if action not in {"prepare", "run"}:
+            raise ValueError("未知的回测任务。")
+        protocol_id = str(payload.get("protocol_id", "")).strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,63}", protocol_id):
+            raise ValueError("方案 ID 只能使用小写字母、数字、下划线和连字符。")
+        with self._lock:
+            if self._snapshot.state == "running":
+                raise RuntimeError("已有回测任务正在运行，请等待完成。")
+            task_id = uuid.uuid4().hex
+            self._snapshot = BacktestTaskSnapshot(
+                id=task_id,
+                state="running",
+                action=action,
+                protocol_id=protocol_id,
+                partition=(
+                    str(payload.get("partition"))
+                    if payload.get("partition")
+                    else None
+                ),
+                started_at=datetime.now().isoformat(timespec="seconds"),
+            )
+        thread = threading.Thread(
+            target=self._run,
+            args=(task_id, action, payload),
+            name=f"qtrade-backtest-{task_id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        return self.snapshot()
+
+    def _run(
+        self,
+        task_id: str,
+        action: str,
+        payload: dict[str, Any],
+    ) -> None:
+        try:
+            exit_code, output, result_id = self.runner(action, payload)
+        except Exception as exc:  # UI task boundary preserves unexpected failures.
+            exit_code, output, result_id = 1, str(exc), None
+        with self._lock:
+            if self._snapshot.id != task_id:
+                return
+            self._snapshot.state = "completed" if exit_code == 0 else "failed"
+            self._snapshot.exit_code = exit_code
+            self._snapshot.output = output[-20000:]
+            self._snapshot.result_id = result_id
+            self._snapshot.finished_at = datetime.now().isoformat(timespec="seconds")
+
+
+class BacktestRepository:
+    def __init__(self, runtime_root: Path, reports_root: Path) -> None:
+        self.protocols = ProtocolStore(runtime_root)
+        self.experiments = ExperimentStore(runtime_root)
+        self.reports_root = Path(reports_root).resolve()
+
+    def meta(self) -> dict[str, Any]:
+        protocols = []
+        for item in self.protocols.list():
+            state = self.protocols.state(item.protocol_id)
+            trials = self.experiments.list(item.protocol_id)
+            protocols.append(
+                {
+                    "protocol_id": item.protocol_id,
+                    "title": item.title,
+                    "hypothesis": item.hypothesis,
+                    "status": item.status.value,
+                    "allowed_trials": item.allowed_trials,
+                    "partitions": {
+                        partition.name.value: {
+                            "start_date": partition.start_date.isoformat(),
+                            "end_date": (
+                                partition.end_date.isoformat()
+                                if partition.end_date
+                                else None
+                            ),
+                            "data_pinned": (
+                                partition.name in item.partition_data_versions
+                            ),
+                        }
+                        for partition in item.partitions
+                        if partition.name != PartitionName.FORWARD
+                    },
+                    "holdout_revealed": state.holdout_revealed_at is not None,
+                    "trial_counts": {
+                        name.value: sum(
+                            trial.partition == name for trial in trials
+                        )
+                        for name in (
+                            PartitionName.DEVELOPMENT,
+                            PartitionName.VALIDATION,
+                            PartitionName.HOLDOUT,
+                        )
+                    },
+                }
+            )
+        records = sorted(
+            self.experiments.list(),
+            key=lambda item: item.started_at,
+            reverse=True,
+        )
+        results = [
+            {
+                "experiment_id": item.experiment_id,
+                "protocol_id": item.protocol_id,
+                "partition": item.partition.value if item.partition else "exploratory",
+                "status": item.status.value,
+                "start_date": item.start_date.isoformat(),
+                "end_date": item.end_date.isoformat(),
+                "started_at": item.started_at.isoformat(),
+                "error": item.error,
+                "has_result": bool(item.result_json and Path(item.result_json).is_file()),
+            }
+            for item in records[:50]
+        ]
+        return {"protocols": protocols, "results": results}
+
+    def result(self, experiment_id: str) -> dict[str, Any]:
+        if not re.fullmatch(r"[0-9a-f]{32}", experiment_id):
+            raise ValueError("无效的回测结果 ID。")
+        record = self.experiments.load(experiment_id)
+        if not record.result_json:
+            raise FileNotFoundError("该实验尚未生成回测结果。")
+        summary_path = Path(record.result_json).resolve()
+        if (
+            self.reports_root not in summary_path.parents
+            or not summary_path.is_file()
+        ):
+            raise FileNotFoundError("回测结果文件不存在或不在报告目录内。")
+        summary = _load_json(summary_path)
+        if summary is None:
+            raise ValueError("回测结果 JSON 无效。")
+        directory = summary_path.parent
+        curve_path = directory / "equity_curve.parquet"
+        trades_path = directory / "rebalances.parquet"
+        curve: list[dict[str, Any]] = []
+        if curve_path.is_file():
+            frame = pl.read_parquet(curve_path).select(
+                "trade_date",
+                "equity",
+                "benchmark_equity",
+            )
+            if frame.height > 320:
+                indices = sorted(
+                    {
+                        round(index * (frame.height - 1) / 319)
+                        for index in range(320)
+                    }
+                )
+                frame = frame[indices]
+            curve = frame.with_columns(
+                pl.col("trade_date").cast(pl.String)
+            ).to_dicts()
+        rebalances: list[dict[str, Any]] = []
+        if trades_path.is_file():
+            trades = pl.read_parquet(trades_path)
+            available = [
+                name
+                for name in (
+                    "signal_date",
+                    "execution_date",
+                    "status",
+                    "holdings",
+                    "turnover",
+                    "blocked_buys",
+                    "blocked_sells",
+                )
+                if name in trades.columns
+            ]
+            rebalances = (
+                trades.select(available)
+                .tail(30)
+                .with_columns(
+                    pl.col(name).cast(pl.String)
+                    for name in ("signal_date", "execution_date")
+                    if name in available
+                )
+                .to_dicts()
+            )
+        return {
+            "experiment_id": experiment_id,
+            "summary": summary,
+            "curve": curve,
+            "rebalances": rebalances,
+        }
+
+
+class SubprocessBacktestRunner:
+    PARTITIONS = ("development", "validation", "holdout")
+
+    def __init__(
+        self,
+        config_path: Path,
+        working_directory: Path,
+        runtime_root: Path,
+    ) -> None:
+        self.config_path = Path(config_path).resolve()
+        self.working_directory = Path(working_directory).resolve()
+        self.protocols = ProtocolStore(runtime_root)
+        self.experiments = ExperimentStore(runtime_root)
+
+    def __call__(
+        self,
+        action: str,
+        payload: dict[str, Any],
+    ) -> tuple[int, str, str | None]:
+        return (
+            self._prepare(payload)
+            if action == "prepare"
+            else self._run_backtest(payload)
+        )
+
+    def _base(self) -> list[str]:
+        return [
+            sys.executable,
+            "-m",
+            "qtrade",
+            "--config",
+            str(self.config_path),
+        ]
+
+    def _prepare(self, payload: dict[str, Any]) -> tuple[int, str, None]:
+        protocol_id = str(payload["protocol_id"])
+        outputs: list[str] = []
+        try:
+            protocol = self.protocols.load(protocol_id)
+        except FileNotFoundError:
+            required = (
+                "title",
+                "hypothesis",
+                "development_start",
+                "development_end",
+                "validation_start",
+                "validation_end",
+                "holdout_start",
+                "holdout_end",
+            )
+            if missing := [name for name in required if not payload.get(name)]:
+                raise ValueError(
+                    "创建方案缺少字段：" + ", ".join(missing)
+                ) from None
+            command = [
+                *self._base(),
+                "protocol",
+                "create",
+                "--id",
+                protocol_id,
+                "--title",
+                str(payload["title"]),
+                "--hypothesis",
+                str(payload["hypothesis"]),
+                "--development-start",
+                str(payload["development_start"]),
+                "--development-end",
+                str(payload["development_end"]),
+                "--validation-start",
+                str(payload["validation_start"]),
+                "--validation-end",
+                str(payload["validation_end"]),
+                "--holdout-start",
+                str(payload["holdout_start"]),
+                "--holdout-end",
+                str(payload["holdout_end"]),
+                "--signal-frequency",
+                "month_end",
+                "--allowed-trials",
+                str(int(payload.get("allowed_trials", 3))),
+            ]
+            exit_code, output = self._execute(command)
+            outputs.append("创建研究方案：\n" + output)
+            if exit_code:
+                return exit_code, "\n\n".join(outputs), None
+            protocol = self.protocols.load(protocol_id)
+        if protocol.status.value == "frozen":
+            raise ValueError("该方案已经冻结，可以直接运行回测。")
+
+        for partition in self.PARTITIONS:
+            commands = (
+                [
+                    *self._base(),
+                    "research",
+                    "build-signals",
+                    "--protocol",
+                    protocol_id,
+                    "--partition",
+                    partition,
+                    "--frequency",
+                    "month_end",
+                ],
+                [
+                    *self._base(),
+                    "protocol",
+                    "pin-data",
+                    "--id",
+                    protocol_id,
+                    "--partition",
+                    partition,
+                ],
+            )
+            for label, command in zip(
+                ("生成历史信号", "固定数据版本"),
+                commands,
+                strict=True,
+            ):
+                exit_code, output = self._execute(command)
+                outputs.append(f"{label}（{partition}）：\n{output}")
+                if exit_code:
+                    return exit_code, "\n\n".join(outputs), None
+        exit_code, output = self._execute(
+            [*self._base(), "protocol", "freeze", "--id", protocol_id]
+        )
+        outputs.append("冻结研究方案：\n" + output)
+        return exit_code, "\n\n".join(outputs), None
+
+    def _run_backtest(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[int, str, str | None]:
+        protocol_id = str(payload["protocol_id"])
+        partition = str(payload.get("partition", ""))
+        if partition not in self.PARTITIONS:
+            raise ValueError("回测区间必须是开发集、验证集或封存集。")
+        if partition == "holdout" and not payload.get("confirm_holdout"):
+            raise ValueError("揭晓封存集前必须勾选确认。")
+        protocol = self.protocols.load(protocol_id)
+        selected = protocol.partition(PartitionName(partition))
+        assert selected.end_date is not None
+        before = {
+            item.experiment_id for item in self.experiments.list(protocol_id)
+        }
+        command = [
+            *self._base(),
+            "backtest",
+            "candidates",
+            "--start",
+            selected.start_date.isoformat(),
+            "--end",
+            selected.end_date.isoformat(),
+            "--protocol",
+            protocol_id,
+            "--partition",
+            partition,
+        ]
+        if partition == "holdout":
+            command.append("--reveal-holdout")
+        exit_code, output = self._execute(command)
+        created = [
+            item
+            for item in self.experiments.list(protocol_id)
+            if item.experiment_id not in before
+        ]
+        result_id = (
+            max(created, key=lambda item: item.started_at).experiment_id
+            if created
+            else None
+        )
+        return exit_code, output, result_id
+
+    def _execute(self, command: list[str]) -> tuple[int, str]:
+        result = subprocess.run(
+            command,
+            cwd=self.working_directory,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**os.environ, "PYTHONUTF8": "1"},
+            check=False,
+        )
+        output = "\n".join(
+            value.strip()
+            for value in (result.stdout, result.stderr)
+            if value.strip()
+        )
+        return result.returncode, output
 
 
 class SubprocessPipelineRunner:

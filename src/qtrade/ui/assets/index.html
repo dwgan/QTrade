@@ -29,6 +29,9 @@
         <button class="nav-item" data-scroll="watchlist">
           <span class="nav-icon">☆</span> 我的自选
         </button>
+        <button class="nav-item" data-scroll="backtest">
+          <span class="nav-icon">⌇</span> 策略回测
+        </button>
         <button class="nav-item" data-scroll="pipeline">
           <span class="nav-icon">↻</span> 运行记录
         </button>
@@ -231,6 +234,87 @@
           </div>
           <div id="pipelineSteps" class="step-grid"></div>
           <div id="qualitySummary" class="quality-summary"></div>
+        </section>
+
+        <section id="backtest" class="backtest-section">
+          <div class="card-head">
+            <div>
+              <span class="section-kicker">AUDITABLE BACKTEST</span>
+              <h2>策略回测</h2>
+              <p>先冻结规则和历史信号，再分别检验开发集、验证集和封存集。</p>
+            </div>
+            <span id="backtestMode" class="outline-pill">尚未选择方案</span>
+          </div>
+
+          <div class="backtest-layout">
+            <article class="content-card no-margin backtest-setup">
+              <div class="backtest-selector">
+                <label for="protocolSelect">已有研究方案</label>
+                <select id="protocolSelect">
+                  <option value="">创建新方案</option>
+                </select>
+              </div>
+              <div id="protocolForm">
+                <div class="form-grid two-column">
+                  <label>方案 ID<input id="protocolId" value="quality_value_v1" pattern="[-a-z0-9_]+"></label>
+                  <label>方案名称<input id="protocolTitle" value="质量价值策略 v1"></label>
+                </div>
+                <label>研究假设<textarea id="protocolHypothesis" rows="2">高质量且估值合理的公司在月度调仓下具有稳定超额收益</textarea></label>
+                <div class="partition-form">
+                  <div><strong>开发集</strong><input id="developmentStart" type="date" value="2016-01-01"><span>至</span><input id="developmentEnd" type="date" value="2020-12-31"></div>
+                  <div><strong>验证集</strong><input id="validationStart" type="date" value="2021-01-01"><span>至</span><input id="validationEnd" type="date" value="2022-12-31"></div>
+                  <div><strong>封存集</strong><input id="holdoutStart" type="date" value="2023-01-01"><span>至</span><input id="holdoutEnd" type="date" value="2024-12-31"></div>
+                </div>
+                <div class="prepare-row">
+                  <label>验证次数上限<input id="allowedTrials" type="number" min="1" max="20" value="3"></label>
+                  <button id="prepareBacktest" class="button primary">创建方案并准备历史信号</button>
+                </div>
+              </div>
+              <div id="protocolSummary" class="protocol-summary hidden"></div>
+            </article>
+
+            <article class="content-card no-margin">
+              <span class="section-kicker">RUN PARTITION</span>
+              <h2>选择检验区间</h2>
+              <p class="muted-copy">先运行开发集，再运行验证集。策略完全确定前不要揭晓封存集。</p>
+              <div class="partition-actions">
+                <button class="partition-button" data-partition="development"><strong>开发集</strong><span id="developmentRange">—</span><small>用于检查和改进</small></button>
+                <button class="partition-button" data-partition="validation"><strong>验证集</strong><span id="validationRange">—</span><small>限制重复试验</small></button>
+                <button class="partition-button danger-zone" data-partition="holdout"><strong>封存集</strong><span id="holdoutRange">—</span><small>最终一次性揭晓</small></button>
+              </div>
+              <label id="holdoutConfirmRow" class="confirm-row hidden">
+                <input id="holdoutConfirm" type="checkbox">
+                我确认策略已经确定，并理解揭晓后不能把该区间重新当作未知样本。
+              </label>
+              <button id="runBacktest" class="button secondary" disabled>运行所选区间回测</button>
+            </article>
+          </div>
+
+          <div id="backtestTask" class="task-banner hidden" role="status">
+            <div class="task-spinner"></div>
+            <div><strong id="backtestTaskTitle">回测任务运行中</strong><p id="backtestTaskDetail">正在准备...</p></div>
+            <button id="toggleBacktestLog" class="text-button">查看日志</button>
+          </div>
+          <pre id="backtestLog" class="task-log hidden"></pre>
+
+          <article id="backtestResults" class="content-card backtest-results">
+            <div class="card-head">
+              <div><span class="section-kicker">PERFORMANCE</span><h2>回测结果</h2></div>
+              <select id="backtestResultSelect"><option value="">暂无结果</option></select>
+            </div>
+            <div id="backtestEmpty" class="empty-inline">准备方案并运行一个区间后，这里会显示收益与风险指标。</div>
+            <div id="backtestResultContent" class="hidden">
+              <div class="backtest-metrics">
+                <article><span>组合总收益</span><strong id="btTotalReturn">—</strong><small id="btBenchmarkReturn">基准 —</small></article>
+                <article><span>年化收益</span><strong id="btAnnualReturn">—</strong><small id="btSharpe">Sharpe —</small></article>
+                <article><span>最大回撤</span><strong id="btDrawdown">—</strong><small id="btBenchmarkDrawdown">基准 —</small></article>
+                <article><span>调仓次数</span><strong id="btRebalances">—</strong><small id="btCosts">成本 —</small></article>
+              </div>
+              <div class="chart-head"><strong>权益曲线</strong><span><i class="legend portfolio"></i>组合 <i class="legend benchmark"></i>基准</span></div>
+              <svg id="equityChart" class="equity-chart" viewBox="0 0 900 280" role="img" aria-label="组合和基准权益曲线"></svg>
+              <div id="backtestAudit" class="backtest-audit"></div>
+            </div>
+          </article>
         </section>
       </div>
 

@@ -4,9 +4,13 @@ import time
 from datetime import date
 from pathlib import Path
 
+import polars as pl
 import pytest
 
+from qtrade.research.protocols import ExperimentRecord, ExperimentStore
 from qtrade.ui.application import (
+    BacktestRepository,
+    BacktestTaskManager,
     OverviewRepository,
     PipelineTaskManager,
     SubprocessPipelineRunner,
@@ -87,6 +91,83 @@ def test_pipeline_task_manager_runs_one_task_and_records_output() -> None:
     assert snapshot["state"] == "completed"
     assert snapshot["exit_code"] == 0
     assert snapshot["output"] == "completed"
+
+
+def test_backtest_task_manager_records_result_id() -> None:
+    def runner(action: str, payload: dict) -> tuple[int, str, str]:
+        assert action == "run"
+        assert payload["partition"] == "validation"
+        return 0, "backtest completed", "a" * 32
+
+    manager = BacktestTaskManager(runner)
+    manager.start(
+        "run",
+        {
+            "protocol_id": "quality_v1",
+            "partition": "validation",
+        },
+    )
+    for _ in range(100):
+        snapshot = manager.snapshot()
+        if snapshot["state"] != "running":
+            break
+        time.sleep(0.005)
+
+    assert snapshot["state"] == "completed"
+    assert snapshot["result_id"] == "a" * 32
+    assert snapshot["output"] == "backtest completed"
+
+
+def test_backtest_repository_loads_summary_and_downsampled_curve(
+    tmp_path: Path,
+) -> None:
+    reports = tmp_path / "reports"
+    result_dir = reports / "research/backtests/quality_v1/experiment"
+    result_dir.mkdir(parents=True)
+    summary = result_dir / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "protocol_id": "quality_v1",
+                "portfolio": {"total_return": 0.2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    pl.DataFrame(
+        {
+            "trade_date": [
+                date(2020, 1, 1).isoformat()
+                for _ in range(400)
+            ],
+            "equity": list(range(400)),
+            "benchmark_equity": list(range(400)),
+        }
+    ).write_parquet(result_dir / "equity_curve.parquet")
+    runtime = tmp_path / "runtime"
+    experiments = ExperimentStore(runtime)
+    record = experiments.create(
+        ExperimentRecord(
+            protocol_id="quality_v1",
+            kind="candidate_backtest",
+            start_date=date(2020, 1, 1),
+            end_date=date(2020, 12, 31),
+            code_commit="abc",
+            config_hash="def",
+        )
+    )
+    experiments.complete(
+        record.experiment_id,
+        data_version="1" * 64,
+        result_json=summary,
+        result_markdown=result_dir / "summary.md",
+    )
+
+    result = BacktestRepository(runtime, reports).result(record.experiment_id)
+
+    assert result["summary"]["portfolio"]["total_return"] == 0.2
+    assert len(result["curve"]) == 320
+    assert result["curve"][0]["trade_date"] == "2020-01-01"
 
 
 def test_recent_quarter_ends_includes_latest_completed_quarter() -> None:

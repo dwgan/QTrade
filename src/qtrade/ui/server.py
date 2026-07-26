@@ -14,8 +14,11 @@ from urllib.parse import parse_qs, urlparse
 
 from qtrade.config import AppConfig
 from qtrade.ui.application import (
+    BacktestRepository,
+    BacktestTaskManager,
     OverviewRepository,
     PipelineTaskManager,
+    SubprocessBacktestRunner,
     SubprocessPipelineRunner,
     WatchlistEditor,
 )
@@ -36,6 +39,17 @@ class UiApplication:
                 working_directory=Path.cwd(),
                 curated_root=config.paths.curated,
                 provider=config.provider.name,
+            )
+        )
+        self.backtests = BacktestRepository(
+            config.paths.runtime,
+            config.paths.reports,
+        )
+        self.backtest_tasks = BacktestTaskManager(
+            SubprocessBacktestRunner(
+                config_path=config_path,
+                working_directory=Path.cwd(),
+                runtime_root=config.paths.runtime,
             )
         )
 
@@ -68,6 +82,19 @@ def make_handler(application: UiApplication) -> type[BaseHTTPRequestHandler]:
             if parsed.path == "/api/task":
                 self._json(application.tasks.snapshot())
                 return
+            if parsed.path == "/api/backtest/meta":
+                self._json(application.backtests.meta())
+                return
+            if parsed.path == "/api/backtest/task":
+                self._json(application.backtest_tasks.snapshot())
+                return
+            if parsed.path == "/api/backtest/result":
+                try:
+                    experiment_id = parse_qs(parsed.query).get("id", [""])[0]
+                    self._json(application.backtests.result(experiment_id))
+                except (FileNotFoundError, ValueError) as exc:
+                    self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
             if parsed.path == "/api/overview":
                 try:
                     as_of_date = self._query_date(parsed.query)
@@ -80,19 +107,30 @@ def make_handler(application: UiApplication) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
-            if parsed.path != "/api/run":
-                self._error(HTTPStatus.NOT_FOUND, "接口不存在。")
-                return
             try:
                 body = self._body()
-                as_of_date = date.fromisoformat(str(body.get("date", "")))
-                mode = body.get("mode")
-                if mode not in {"update", "existing"}:
-                    raise ValueError("运行模式必须是 update 或 existing。")
-                snapshot = application.tasks.start(
-                    as_of_date,
-                    skip_data=mode == "existing",
-                )
+                if parsed.path == "/api/run":
+                    if application.backtest_tasks.snapshot()["state"] == "running":
+                        raise RuntimeError("回测任务正在运行，请等待完成。")
+                    as_of_date = date.fromisoformat(str(body.get("date", "")))
+                    mode = body.get("mode")
+                    if mode not in {"update", "existing"}:
+                        raise ValueError("运行模式必须是 update 或 existing。")
+                    snapshot = application.tasks.start(
+                        as_of_date,
+                        skip_data=mode == "existing",
+                    )
+                elif parsed.path in {
+                    "/api/backtest/prepare",
+                    "/api/backtest/run",
+                }:
+                    if application.tasks.snapshot()["state"] == "running":
+                        raise RuntimeError("日终分析正在运行，请等待完成。")
+                    action = parsed.path.rsplit("/", 1)[1]
+                    snapshot = application.backtest_tasks.start(action, body)
+                else:
+                    self._error(HTTPStatus.NOT_FOUND, "接口不存在。")
+                    return
             except (ValueError, RuntimeError) as exc:
                 self._error(HTTPStatus.BAD_REQUEST, str(exc))
                 return

@@ -27,7 +27,8 @@ def test_historical_signal_builder_uses_month_end_dates_and_provenance(
     monkeypatch,
 ) -> None:
     curated = ParquetDatasetStore(tmp_path / "curated", "curated")
-    calendar_date = date(2020, 12, 31)
+    # A calendar snapshot may be captured after the historical research period.
+    calendar_date = date(2026, 7, 24)
     curated.write(
         DataBatch(
             dataset=Dataset.TRADE_CALENDAR,
