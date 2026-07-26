@@ -119,6 +119,7 @@ class StrategyProtocol(BaseModel):
     code_commit: str
     config_hash: str
     data_version: str = "unfrozen"
+    partition_data_versions: dict[PartitionName, str] = Field(default_factory=dict)
     content_hash: str | None = None
 
     @model_validator(mode="after")
@@ -285,6 +286,27 @@ class ProtocolStore:
             frozen,
         )
         return frozen
+
+    def pin_data_version(
+        self,
+        protocol_id: str,
+        partition: PartitionName,
+        data_version: str,
+    ) -> StrategyProtocol:
+        protocol = self.load(protocol_id)
+        if protocol.status != ProtocolStatus.DRAFT:
+            raise ValueError("Data versions can only be pinned on a draft protocol.")
+        if partition == PartitionName.FORWARD:
+            raise ValueError("Forward observation data cannot be pinned in advance.")
+        if not re.fullmatch(r"[0-9a-f]{64}", data_version):
+            raise ValueError("Data version must be a 64-character lowercase SHA-256.")
+        protocol.partition(partition)
+        protocol.partition_data_versions[partition] = data_version
+        self._write_protocol(
+            self._directory(protocol_id) / "protocol.yaml",
+            protocol,
+        )
+        return protocol
 
     def state(self, protocol_id: str) -> ProtocolState:
         self.load(protocol_id)

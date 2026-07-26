@@ -88,6 +88,8 @@ class CandidateBacktestAnalysis(BaseModel):
     code_commit: str | None = None
     config_hash: str | None = None
     data_version: str | None = None
+    signal_versions: dict[str, str] = Field(default_factory=dict)
+    signal_origins: list[str] = Field(default_factory=list)
     leakage_audit_passed: bool | None = None
     leakage_audit_warnings: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

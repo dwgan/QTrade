@@ -16,6 +16,19 @@ class SuccessfulService:
         return SimpleNamespace(json_path=self.path)
 
 
+class OriginAwareService(SuccessfulService):
+    supports_signal_origin = True
+
+    def __init__(self, tmp_path: Path, name: str) -> None:
+        super().__init__(tmp_path, name)
+        self.origins: list[str] = []
+
+    def run(self, as_of_date: date, signal_origin: str | None = None):
+        if signal_origin is not None:
+            self.origins.append(signal_origin)
+        return super().run(as_of_date)
+
+
 class FakeDashboard:
     def __init__(self, tmp_path: Path) -> None:
         self.path = tmp_path / "index.html"
@@ -72,6 +85,21 @@ def test_pipeline_runs_all_steps_from_existing_data(tmp_path: Path) -> None:
     ]
     assert result.json_path.exists()
     assert result.markdown_path.exists()
+
+
+def test_pipeline_marks_past_factor_signal_as_reconstructed(
+    tmp_path: Path,
+) -> None:
+    service = OriginAwareService(tmp_path, "analysis")
+
+    result = _pipeline(tmp_path, None, service).run(
+        date(2026, 7, 24),
+        [Dataset.DAILY_PRICES],
+        skip_data=True,
+    )
+
+    assert result.run.status == "success"
+    assert service.origins == ["reconstructed"]
 
 
 def test_pipeline_stops_dependent_steps_after_data_failure(tmp_path: Path) -> None:

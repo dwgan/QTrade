@@ -1,3 +1,5 @@
+import hashlib
+import json
 from datetime import date
 from pathlib import Path
 
@@ -94,6 +96,29 @@ def test_holdout_reveal_is_recorded_separately_from_frozen_protocol(
     assert store.load("quality_v1").content_hash == frozen.content_hash
 
 
+def test_partition_data_version_must_be_pinned_before_freeze(
+    tmp_path: Path,
+) -> None:
+    store = ProtocolStore(tmp_path)
+    store.create(make_protocol())
+    version = "b" * 64
+
+    updated = store.pin_data_version(
+        "quality_v1",
+        PartitionName.VALIDATION,
+        version,
+    )
+
+    assert updated.partition_data_versions[PartitionName.VALIDATION] == version
+    store.freeze("quality_v1")
+    with pytest.raises(ValueError, match="draft"):
+        store.pin_data_version(
+            "quality_v1",
+            PartitionName.HOLDOUT,
+            "c" * 64,
+        )
+
+
 def test_temporal_leakage_audit_rejects_future_availability() -> None:
     snapshot_date = date(2024, 4, 30)
     ranking = pl.DataFrame(
@@ -152,7 +177,10 @@ def test_formal_backtest_rejects_rankings_without_complete_lineage(
 ) -> None:
     reports = tmp_path / "reports"
     ranking_directory = reports / "factors/2018-01-02"
-    ranking_directory.mkdir(parents=True)
+    signal_id = "a" * 64
+    version_directory = ranking_directory / "versions" / signal_id
+    version_directory.mkdir(parents=True)
+    ranking_path = version_directory / "rankings.parquet"
     pl.DataFrame(
         {
             "ts_code": ["000001.SZ"],
@@ -160,7 +188,25 @@ def test_formal_backtest_rejects_rankings_without_complete_lineage(
             "score": [100.0],
             "ann_date": ["20171231"],
         }
-    ).write_parquet(ranking_directory / "rankings.parquet")
+    ).write_parquet(ranking_path)
+    (version_directory / "manifest.json").write_text(
+        json.dumps(
+            {
+                "signal_id": signal_id,
+                "origin": "reconstructed",
+                "files": {
+                    "rankings.parquet": hashlib.sha256(
+                        ranking_path.read_bytes()
+                    ).hexdigest()
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ranking_directory / "latest.json").write_text(
+        json.dumps({"signal_id": signal_id}),
+        encoding="utf-8",
+    )
     service = ResearchService(
         research_config=ResearchConfig(),
         backtest_config=BacktestConfig(),

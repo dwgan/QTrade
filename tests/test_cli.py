@@ -21,10 +21,20 @@ def test_industry_analysis_command_parses() -> None:
 
 
 def test_factor_analysis_command_parses() -> None:
-    args = build_parser().parse_args(["analyze", "factors", "--date", "2026-07-24"])
+    args = build_parser().parse_args(
+        [
+            "analyze",
+            "factors",
+            "--date",
+            "2026-07-24",
+            "--origin",
+            "live_observed",
+        ]
+    )
 
     assert args.analyze_command == "factors"
     assert args.date == date(2026, 7, 24)
+    assert args.origin == "live_observed"
 
 
 def test_factor_research_command_parses() -> None:
@@ -115,6 +125,24 @@ def test_protocol_create_command_parses() -> None:
 
     assert args.protocol_command == "create"
     assert args.protocol_id == "quality_v1"
+
+
+def test_protocol_pin_data_command_parses() -> None:
+    args = build_parser().parse_args(
+        [
+            "protocol",
+            "pin-data",
+            "--id",
+            "quality_v1",
+            "--partition",
+            "validation",
+            "--version",
+            "a" * 64,
+        ]
+    )
+
+    assert args.protocol_command == "pin-data"
+    assert args.partition == "validation"
 
 
 def test_daily_observation_command_parses() -> None:

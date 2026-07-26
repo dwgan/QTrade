@@ -8,7 +8,7 @@ from qtrade.config import FactorConfig
 from qtrade.data.storage import ParquetDatasetStore
 from qtrade.domain import Dataset
 from qtrade.factors.analyzer import FactorAnalyzer
-from qtrade.factors.models import FactorAnalysis
+from qtrade.factors.models import FactorAnalysis, SignalOrigin
 from qtrade.factors.reporting import FactorReportWriter
 from qtrade.factors.universe import PointInTimeUniverseBuilder
 
@@ -22,6 +22,8 @@ class FactorAnalysisResult:
 
 
 class FactorAnalysisService:
+    supports_signal_origin = True
+
     def __init__(
         self,
         config: FactorConfig,
@@ -38,7 +40,12 @@ class FactorAnalysisService:
         )
         self.reporter = FactorReportWriter(reports_root)
 
-    def run(self, as_of_date: date) -> FactorAnalysisResult:
+    def run(
+        self,
+        as_of_date: date,
+        signal_origin: SignalOrigin | str = SignalOrigin.RECONSTRUCTED,
+    ) -> FactorAnalysisResult:
+        signal_origin = SignalOrigin(signal_origin)
         start_date = as_of_date - timedelta(days=self.config.history_calendar_days)
         prices = self.curated_store.read_range(
             Dataset.DAILY_PRICES, self.provider, start_date, as_of_date
@@ -96,6 +103,7 @@ class FactorAnalysisService:
             universe.audit.index_membership_dates
         )
         computation.analysis.warnings.extend(universe.audit.warnings)
+        computation.analysis.signal_origin = signal_origin
         json_path, markdown_path, rankings_path = self.reporter.write(computation)
         return FactorAnalysisResult(
             computation.analysis,

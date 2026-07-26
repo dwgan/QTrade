@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
+
+
+class SignalOrigin(StrEnum):
+    LIVE_OBSERVED = "live_observed"
+    RECONSTRUCTED = "reconstructed"
 
 
 class CandidateStock(BaseModel):
@@ -25,6 +31,7 @@ class CandidateStock(BaseModel):
 class FactorAnalysis(BaseModel):
     as_of_date: date
     created_at: datetime = Field(default_factory=datetime.now)
+    signal_origin: SignalOrigin = SignalOrigin.RECONSTRUCTED
     daily_basic_snapshot_date: date
     financial_snapshot_date: date
     security_master_snapshot_date: date

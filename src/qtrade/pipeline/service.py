@@ -138,9 +138,26 @@ class DailyPipelineService:
             if not data_ok:
                 step = self._skipped(name, "Skipped because data update failed.")
             else:
+                def run_analysis(service=service):
+                    return service.run(as_of_date)
+
+                if name == "factor_analysis" and getattr(
+                    service, "supports_signal_origin", False
+                ):
+                    origin = (
+                        "live_observed"
+                        if as_of_date == date.today()
+                        else "reconstructed"
+                    )
+                    def run_analysis(service=service, origin=origin):
+                        return service.run(
+                            as_of_date,
+                            signal_origin=origin,
+                        )
+
                 step, _ = self._execute(
                     name,
-                    lambda service=service: service.run(as_of_date),
+                    run_analysis,
                 )
             steps.append(step)
             if name == "factor_analysis":

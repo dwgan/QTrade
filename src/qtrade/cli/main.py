@@ -207,6 +207,12 @@ def build_parser() -> argparse.ArgumentParser:
     industry.add_argument("--date", required=True, type=parse_date)
     factors = analyze_commands.add_parser("factors", help="Generate multi-factor stock candidates")
     factors.add_argument("--date", required=True, type=parse_date)
+    factors.add_argument(
+        "--origin",
+        choices=["reconstructed", "live_observed"],
+        default="reconstructed",
+        help="Whether this signal was reconstructed later or observed live",
+    )
 
     research = commands.add_parser("research", help="Historical factor research")
     research_commands = research.add_subparsers(dest="research_command", required=True)
@@ -243,6 +249,24 @@ def build_parser() -> argparse.ArgumentParser:
     protocol_freeze.add_argument(
         "--data-version",
         help="Optional precomputed immutable data version",
+    )
+    protocol_pin = protocol_commands.add_parser(
+        "pin-data", help="Pin an exploratory run data version to a draft partition"
+    )
+    protocol_pin.add_argument("--id", required=True, dest="protocol_id")
+    protocol_pin.add_argument(
+        "--partition",
+        required=True,
+        choices=[
+            PartitionName.DEVELOPMENT.value,
+            PartitionName.VALIDATION.value,
+            PartitionName.HOLDOUT.value,
+        ],
+    )
+    protocol_pin.add_argument(
+        "--version",
+        dest="data_version",
+        help="Optional precomputed hash; omit to calculate without running performance",
     )
     protocol_show = protocol_commands.add_parser("show", help="Show protocol and state")
     protocol_show.add_argument("--id", required=True, dest="protocol_id")
@@ -408,6 +432,30 @@ def run(args: argparse.Namespace) -> int:
                 print(f"Protocol frozen: {frozen.protocol_id}")
                 print(f"Hash: {frozen.content_hash}")
                 return 0
+            if args.protocol_command == "pin-data":
+                partition = PartitionName(args.partition)
+                data_version = args.data_version
+                if data_version is None:
+                    draft = protocols.load(args.protocol_id)
+                    selected = draft.partition(partition)
+                    if selected.end_date is None:
+                        raise ValueError("Cannot pin an open-ended partition.")
+                    data_version = build_research_service(
+                        config
+                    ).candidate_data_version(
+                        selected.start_date,
+                        selected.end_date,
+                    )
+                updated = protocols.pin_data_version(
+                    args.protocol_id,
+                    partition,
+                    data_version,
+                )
+                print(
+                    f"Pinned {args.partition} data version for "
+                    f"{updated.protocol_id}: {data_version}"
+                )
+                return 0
             if args.protocol_command == "show":
                 item = protocols.load(args.protocol_id)
                 state = protocols.state(args.protocol_id)
@@ -559,6 +607,7 @@ def run(args: argparse.Namespace) -> int:
                     f"final equity: {analysis.final_equity:.2f}; "
                     f"return: {analysis.portfolio.total_return:.2%}"
                 )
+                print(f"Data version: {analysis.data_version}")
                 succeeded = analysis.rebalance_count > 0
             print(f"Report: {result.markdown_path}")
             return 0 if succeeded else 1
@@ -583,7 +632,10 @@ def run(args: argparse.Namespace) -> int:
                 )
                 succeeded = bool(analysis.industries)
             else:
-                result = build_factor_service(config).run(args.date)
+                result = build_factor_service(config).run(
+                    args.date,
+                    signal_origin=args.origin,
+                )
                 analysis = result.analysis
                 print(
                     f"Candidates: {len(analysis.candidates)}; "

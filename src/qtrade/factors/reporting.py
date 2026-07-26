@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from qtrade.factors.analyzer import FactorComputation
@@ -28,22 +31,109 @@ class FactorReportWriter:
         analysis = computation.analysis
         directory = self.reports_root / "factors" / analysis.as_of_date.isoformat()
         directory.mkdir(parents=True, exist_ok=True)
+        temporary_rankings = directory / f".rankings.{uuid.uuid4().hex}.parquet"
+        computation.rankings.write_parquet(temporary_rankings, compression="zstd")
+        rankings_hash = self._file_hash(temporary_rankings)
+        semantic_analysis = analysis.model_dump(
+            mode="json",
+            exclude={"created_at"},
+        )
+        analysis_hash = hashlib.sha256(
+            json.dumps(
+                semantic_analysis,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        signal_id = hashlib.sha256(
+            f"{analysis.signal_origin.value}:{analysis_hash}:{rankings_hash}".encode()
+        ).hexdigest()
+        version_directory = directory / "versions" / signal_id
+        if version_directory.exists():
+            temporary_rankings.unlink()
+            self._verify_version(version_directory, signal_id)
+        else:
+            version_directory.mkdir(parents=True)
+            self._atomic_text(
+                version_directory / "factors.json",
+                json.dumps(
+                    analysis.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+            self._atomic_text(
+                version_directory / "factors.md",
+                self._markdown(computation),
+            )
+            os.replace(temporary_rankings, version_directory / "rankings.parquet")
+            manifest = {
+                "schema_version": 1,
+                "signal_id": signal_id,
+                "as_of_date": analysis.as_of_date.isoformat(),
+                "origin": analysis.signal_origin.value,
+                "created_at": datetime.now().isoformat(),
+                "analysis_content_hash": analysis_hash,
+                "files": {
+                    name: self._file_hash(version_directory / name)
+                    for name in ("factors.json", "factors.md", "rankings.parquet")
+                },
+            }
+            self._atomic_text(
+                version_directory / "manifest.json",
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+            )
+
         json_path = directory / "factors.json"
         markdown_path = directory / "factors.md"
         rankings_path = directory / "rankings.parquet"
+        for name, target in (
+            ("factors.json", json_path),
+            ("factors.md", markdown_path),
+            ("rankings.parquet", rankings_path),
+        ):
+            self._atomic_copy(version_directory / name, target)
         self._atomic_text(
-            json_path,
+            directory / "latest.json",
             json.dumps(
-                analysis.model_dump(mode="json"),
+                {
+                    "signal_id": signal_id,
+                    "origin": analysis.signal_origin.value,
+                    "version_path": f"versions/{signal_id}",
+                },
                 ensure_ascii=False,
                 indent=2,
             ),
         )
-        self._atomic_text(markdown_path, self._markdown(computation))
-        temporary = directory / f".rankings.{uuid.uuid4().hex}.parquet"
-        computation.rankings.write_parquet(temporary, compression="zstd")
-        os.replace(temporary, rankings_path)
         return json_path, markdown_path, rankings_path
+
+    @classmethod
+    def _verify_version(cls, directory: Path, signal_id: str) -> None:
+        manifest_path = directory / "manifest.json"
+        if not manifest_path.exists():
+            raise ValueError(f"Incomplete immutable signal version: {directory}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("signal_id") != signal_id:
+            raise ValueError(f"Signal manifest id mismatch: {directory}")
+        for name, expected in manifest.get("files", {}).items():
+            path = directory / name
+            if not path.exists() or cls._file_hash(path) != expected:
+                raise ValueError(f"Immutable signal file hash mismatch: {path}")
+
+    @staticmethod
+    def _file_hash(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _atomic_copy(source: Path, target: Path) -> None:
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        shutil.copyfile(source, temporary)
+        os.replace(temporary, target)
 
     @staticmethod
     def _markdown(computation: FactorComputation) -> str:

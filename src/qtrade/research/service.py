@@ -101,6 +101,69 @@ class ResearchService:
         )
         return FactorResearchResult(analysis, json_path, markdown_path)
 
+    def candidate_data_version(
+        self,
+        start_date: date,
+        end_date: date,
+    ) -> str:
+        snapshots = self._snapshots(start_date, end_date)
+        signal_manifests = {
+            snapshot_date: self.snapshots.manifest(snapshot_date)
+            for snapshot_date, _ in snapshots
+        }
+        if any(manifest is None for manifest in signal_manifests.values()):
+            raise ValueError(
+                "Data version pinning requires immutable version manifests for "
+                "every ranking snapshot."
+            )
+        audit = TemporalLeakageAuditor.audit_snapshots(snapshots)
+        if not audit.passed or audit.warnings:
+            details = (
+                f"{audit.issues[0].column} contains future rows."
+                if audit.issues
+                else " ".join(audit.warnings)
+            )
+            raise ValueError(
+                "Data version pinning requires complete point-in-time provenance: "
+                + details
+            )
+        prices = self.curated_store.read_range(
+            Dataset.DAILY_PRICES, self.provider, start_date, end_date
+        )
+        adjustments = self.curated_store.read_range(
+            Dataset.ADJUST_FACTORS, self.provider, start_date, end_date
+        )
+        index_daily = self.curated_store.read_range(
+            Dataset.INDEX_DAILY, self.provider, start_date, end_date
+        )
+        stock_limits = None
+        with suppress(FileNotFoundError):
+            stock_limits = self.curated_store.read_range(
+                Dataset.STOCK_LIMIT, self.provider, start_date, end_date
+            )
+        frames = {
+            "daily_prices": prices,
+            "adjust_factors": adjustments,
+            "index_daily": index_daily,
+            **{
+                f"ranking_{snapshot_date.isoformat()}": ranking
+                for snapshot_date, ranking in snapshots
+            },
+        }
+        if stock_limits is not None:
+            frames["stock_limit"] = stock_limits
+        signal_versions = {
+            snapshot_date.isoformat(): manifest["signal_id"]
+            for snapshot_date, manifest in signal_manifests.items()
+            if manifest is not None
+        }
+        return canonical_hash(
+            {
+                "frames": frame_manifest_hash(frames),
+                "signal_versions": signal_versions,
+            }
+        )
+
     def backtest_candidates(
         self,
         start_date: date,
@@ -147,6 +210,16 @@ class ResearchService:
                     f"Current code commit {code_commit} does not match frozen protocol "
                     f"commit {protocol.code_commit}."
                 )
+            if (
+                partition in {PartitionName.VALIDATION, PartitionName.HOLDOUT}
+                and partition not in protocol.partition_data_versions
+                and protocol.data_version == "unfrozen"
+            ):
+                raise ValueError(
+                    f"Frozen protocol has no pinned data version for "
+                    f"{partition.value}. Run an exploratory backtest, pin its data "
+                    "version on the draft protocol, then freeze."
+                )
             if partition == PartitionName.HOLDOUT:
                 state = self.protocols.state(protocol_id)
                 if state.holdout_revealed_at is None:
@@ -184,6 +257,17 @@ class ResearchService:
         )
         try:
             snapshots = self._snapshots(start_date, end_date)
+            signal_manifests = {
+                snapshot_date: self.snapshots.manifest(snapshot_date)
+                for snapshot_date, _ in snapshots
+            }
+            if protocol is not None and any(
+                manifest is None for manifest in signal_manifests.values()
+            ):
+                raise ValueError(
+                    "Formal backtest requires immutable version manifests for every "
+                    "ranking snapshot. Regenerate legacy snapshots first."
+                )
             audit = TemporalLeakageAuditor.audit_snapshots(snapshots)
             if not audit.passed:
                 first = audit.issues[0]
@@ -221,15 +305,48 @@ class ResearchService:
             }
             if stock_limits is not None:
                 frames["stock_limit"] = stock_limits
-            data_version = frame_manifest_hash(frames)
-            if (
-                protocol is not None
-                and protocol.data_version != "unfrozen"
-                and protocol.data_version != data_version
-            ):
-                raise ValueError(
-                    "Loaded data does not match the version frozen in the protocol."
+            signal_versions = {
+                snapshot_date.isoformat(): manifest["signal_id"]
+                for snapshot_date, manifest in signal_manifests.items()
+                if manifest is not None
+            }
+            signal_origins = sorted(
+                {
+                    str(manifest["origin"])
+                    for manifest in signal_manifests.values()
+                    if manifest is not None
+                }
+            )
+            data_version = canonical_hash(
+                {
+                    "frames": frame_manifest_hash(frames),
+                    "signal_versions": signal_versions,
+                }
+            )
+            if protocol is not None and partition is not None:
+                expected_data_version = protocol.partition_data_versions.get(partition)
+                if expected_data_version is None and partition in {
+                    PartitionName.VALIDATION,
+                    PartitionName.HOLDOUT,
+                }:
+                    raise ValueError(
+                        f"Frozen protocol has no pinned data version for "
+                        f"{partition.value}. Run an exploratory backtest, pin its "
+                        "data version on the draft protocol, then freeze."
+                    )
+                expected_data_version = expected_data_version or (
+                    protocol.data_version
+                    if protocol.data_version != "unfrozen"
+                    else None
                 )
+                if (
+                    expected_data_version is not None
+                    and expected_data_version != data_version
+                ):
+                    raise ValueError(
+                        "Loaded data and signal versions do not match the version "
+                        f"pinned for {partition.value}."
+                    )
             analysis, curve, trades = CandidateBacktester(self.backtest_config).run(
                 start_date,
                 end_date,
@@ -249,6 +366,8 @@ class ResearchService:
                     "code_commit": code_commit,
                     "config_hash": config_hash,
                     "data_version": data_version,
+                    "signal_versions": signal_versions,
+                    "signal_origins": signal_origins,
                     "leakage_audit_passed": audit.passed,
                     "leakage_audit_warnings": audit.warnings,
                 }

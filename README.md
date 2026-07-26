@@ -119,10 +119,10 @@ qtrade data update `
   --date 2026-07-24 `
   --datasets security_master,daily_basic,stock_limit
 
-qtrade analyze factors --date 2026-07-24
+qtrade analyze factors --date 2026-07-24 --origin reconstructed
 ```
 
-全市场季度财务命令使用 Tushare `fina_indicator_vip`，需要相应积分权限。分析结果写入 `reports/factors/YYYY-MM-DD`，包括候选报告和完整排名 Parquet。
+全市场季度财务命令使用 Tushare `fina_indicator_vip`，需要相应积分权限。分析结果写入 `reports/factors/YYYY-MM-DD`，包括候选报告和完整排名 Parquet。历史补算使用 `reconstructed`；只有当天按冻结逻辑真实产生的信号才可标记为 `live_observed`。
 
 积累历史因子排名后，可以运行因子有效性检验和候选组合回测：
 

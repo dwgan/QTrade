@@ -130,6 +130,8 @@ class ResearchReportWriter:
                 f"- 代码提交：{analysis.code_commit or '未知'}",
                 f"- 配置哈希：{analysis.config_hash or '未知'}",
                 f"- 数据版本：{analysis.data_version or '未知'}",
+                f"- 信号版本数：{len(analysis.signal_versions)}",
+                f"- 信号来源：{', '.join(analysis.signal_origins) or '旧版未标记'}",
                 f"- 时间泄漏审计："
                 f"{'通过' if analysis.leakage_audit_passed else '未通过或未执行'}",
                 f"- 执行规则：{analysis.execution_rule}",
