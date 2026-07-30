@@ -71,6 +71,22 @@ research:
   quantiles: 5
   minimum_cross_section: 10
 
+futures:
+  exchanges:
+    - CFFEX
+    - SHFE
+    - INE
+    - DCE
+    - CZCE
+    - GFEX
+  audit_minimum_daily_volume: 1000
+  audit_minimum_open_interest: 1000
+  excluded_product_codes:
+    - SCTAS
+    - L_F
+    - PP_F
+    - V_F
+
 backtest:
   initial_capital: 1000000
   transaction_cost_rate: 0.0015

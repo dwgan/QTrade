@@ -15,6 +15,7 @@ from qtrade.data.storage import ParquetDatasetStore
 from qtrade.data.validation import DataValidator
 from qtrade.domain import Dataset
 from qtrade.factors.service import FactorAnalysisService
+from qtrade.futures.audit import FuturesDataAuditService
 from qtrade.industry.service import IndustryAnalysisService
 from qtrade.market.service import MarketAnalysisService
 from qtrade.observation.service import ObservationService
@@ -173,6 +174,17 @@ def build_pipeline_service(
     )
 
 
+def build_futures_audit_service(config: AppConfig) -> FuturesDataAuditService:
+    config.paths.create()
+    provider = TushareProvider(config.provider, config.market)
+    return FuturesDataAuditService(
+        source=provider,
+        config=config.futures,
+        reports_root=config.paths.reports,
+        secrets=(config.provider.token(),),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qtrade", description="QTrade research toolkit")
     parser.add_argument("--config", default="config/base.yaml", help="YAML configuration path")
@@ -254,6 +266,17 @@ def build_parser() -> argparse.ArgumentParser:
     coverage.add_argument("--end", required=True, type=parse_date)
 
     data_commands.add_parser("datasets", help="List supported datasets")
+
+    futures = commands.add_parser("futures", help="China futures research operations")
+    futures_commands = futures.add_subparsers(
+        dest="futures_command",
+        required=True,
+    )
+    futures_audit = futures_commands.add_parser(
+        "audit",
+        help="Audit futures API permissions and current contract rule coverage",
+    )
+    futures_audit.add_argument("--date", required=True, type=parse_date)
 
     analyze = commands.add_parser("analyze", help="Research analysis")
     analyze_commands = analyze.add_subparsers(dest="analyze_command", required=True)
@@ -446,6 +469,30 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     config = load_config(Path(args.config))
+    if args.command == "futures":
+        try:
+            result = build_futures_audit_service(config).run(args.date)
+            for item in result.report.query_checks:
+                scope = item.exchange or "ALL"
+                state = "OK" if item.passed else "FAILED"
+                print(
+                    f"[{state}] {item.endpoint}/{scope}: "
+                    f"{item.row_count} rows"
+                )
+            print(
+                "Phase 1 futures data foundation ready: "
+                f"{result.report.ready_for_data_foundation}"
+            )
+            print(
+                "Phase 3 futures backtest ready: "
+                f"{result.report.ready_for_backtest}"
+            )
+            print(f"Report: {result.markdown_path}")
+            return 0 if result.report.ready_for_data_foundation else 1
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
     if args.command == "protocol":
         protocols = ProtocolStore(config.paths.runtime)
         experiments = ExperimentStore(config.paths.runtime)

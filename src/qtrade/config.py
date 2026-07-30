@@ -149,6 +149,46 @@ class ResearchConfig(BaseModel):
     minimum_cross_section: int = Field(default=10, ge=2)
 
 
+class FuturesConfig(BaseModel):
+    exchanges: list[str] = Field(
+        default_factory=lambda: [
+            "CFFEX",
+            "SHFE",
+            "INE",
+            "DCE",
+            "CZCE",
+            "GFEX",
+        ]
+    )
+    audit_minimum_daily_volume: float = Field(default=1000, ge=0)
+    audit_minimum_open_interest: float = Field(default=1000, ge=0)
+    excluded_product_codes: list[str] = Field(
+        default_factory=lambda: ["SCTAS", "L_F", "PP_F", "V_F"]
+    )
+
+    @field_validator("exchanges")
+    @classmethod
+    def valid_exchanges(cls, value: list[str]) -> list[str]:
+        supported = {"CFFEX", "SHFE", "INE", "DCE", "CZCE", "GFEX"}
+        normalized = list(
+            dict.fromkeys(item.strip().upper() for item in value if item.strip())
+        )
+        if not normalized:
+            raise ValueError("Futures audit requires at least one exchange.")
+        if unknown := set(normalized) - supported:
+            raise ValueError(
+                "Unsupported futures exchanges: " + ", ".join(sorted(unknown))
+            )
+        return normalized
+
+    @field_validator("excluded_product_codes")
+    @classmethod
+    def normalized_excluded_products(cls, value: list[str]) -> list[str]:
+        return list(
+            dict.fromkeys(item.strip().upper() for item in value if item.strip())
+        )
+
+
 class BacktestConfig(BaseModel):
     initial_capital: float = Field(default=1_000_000, gt=0)
     transaction_cost_rate: float = Field(default=0.0015, ge=0, lt=0.1)
@@ -195,6 +235,7 @@ class AppConfig(BaseModel):
     industry: IndustryConfig = Field(default_factory=IndustryConfig)
     factors: FactorConfig = Field(default_factory=FactorConfig)
     research: ResearchConfig = Field(default_factory=ResearchConfig)
+    futures: FuturesConfig = Field(default_factory=FuturesConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
     observation: ObservationConfig = Field(default_factory=ObservationConfig)
     update: UpdateConfig = Field(default_factory=UpdateConfig)

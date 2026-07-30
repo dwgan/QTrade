@@ -18,6 +18,16 @@ class TushareProvider:
     normalization is handled by the ingestion service.
     """
 
+    FUTURES_OPERATIONS = frozenset(
+        {
+            "fut_basic",
+            "fut_daily",
+            "fut_mapping",
+            "fut_settle",
+            "ft_limit",
+        }
+    )
+
     def __init__(
         self,
         config: ProviderConfig,
@@ -104,6 +114,11 @@ class TushareProvider:
             frame=frame,
             request=params,
         )
+
+    def query(self, operation: str, **params: Any) -> pl.DataFrame:
+        if operation not in self.FUTURES_OPERATIONS:
+            raise ValueError(f"Unsupported Tushare query operation: {operation}")
+        return self._call(getattr(self._client, operation), **params)
 
     def _fetch_trade_calendar(self, request: FetchRequest) -> tuple[pl.DataFrame, dict[str, Any]]:
         params = {

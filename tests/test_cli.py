@@ -12,6 +12,16 @@ def test_market_analysis_command_parses() -> None:
     assert args.date == date(2026, 7, 24)
 
 
+def test_futures_audit_command_parses() -> None:
+    args = build_parser().parse_args(
+        ["futures", "audit", "--date", "2026-07-24"]
+    )
+
+    assert args.command == "futures"
+    assert args.futures_command == "audit"
+    assert args.date == date(2026, 7, 24)
+
+
 def test_industry_analysis_command_parses() -> None:
     args = build_parser().parse_args(["analyze", "industry", "--date", "2026-07-24"])
 

@@ -189,3 +189,29 @@ def test_tushare_conversion_normalizes_nan_in_mixed_columns() -> None:
     assert frame.get_column("end_date").to_list() == [None, "20260712"]
     assert frame.get_column("change_reason").to_list() == ["renamed", None]
     assert frame.get_column("numeric").to_list() == [1.5, None]
+
+
+def test_tushare_futures_query_is_whitelisted() -> None:
+    class FuturesClient:
+        def fut_daily(self, **kwargs):
+            return pd.DataFrame(
+                {
+                    "ts_code": ["CU2608.SHF"],
+                    "trade_date": [kwargs["trade_date"]],
+                }
+            )
+
+    provider = TushareProvider(
+        ProviderConfig(request_pause_seconds=0),
+        MarketConfig(),
+        client=FuturesClient(),
+    )
+
+    frame = provider.query("fut_daily", trade_date="20260724")
+
+    assert frame.get_column("ts_code").item() == "CU2608.SHF"
+
+    import pytest
+
+    with pytest.raises(ValueError, match="Unsupported Tushare query"):
+        provider.query("stock_basic")

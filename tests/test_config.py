@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from qtrade.config import load_config
+import pytest
+
+from qtrade.config import FuturesConfig, load_config
 
 
 def test_load_config_resolves_paths_from_project_root(tmp_path: Path) -> None:
@@ -32,3 +34,18 @@ def test_provider_token_reads_environment(monkeypatch) -> None:
     from qtrade.config import ProviderConfig
 
     assert ProviderConfig(token_env="TEST_TUSHARE_TOKEN").token() == "secret"
+
+
+def test_futures_config_normalizes_exchanges_and_products() -> None:
+    config = FuturesConfig(
+        exchanges=["shfe", "DCE", "shfe"],
+        excluded_product_codes=["sctas", "SCTAS", "l_f"],
+    )
+
+    assert config.exchanges == ["SHFE", "DCE"]
+    assert config.excluded_product_codes == ["SCTAS", "L_F"]
+
+
+def test_futures_config_rejects_unknown_exchange() -> None:
+    with pytest.raises(ValueError, match="Unsupported futures exchanges"):
+        FuturesConfig(exchanges=["SSE"])
