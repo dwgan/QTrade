@@ -86,6 +86,14 @@ futures:
     - L_F
     - PP_F
     - V_F
+  update_datasets:
+    - futures_contracts
+    - futures_contract_rules
+    - futures_daily
+    - futures_settlements
+    - futures_mappings
+    - futures_limits
+    - futures_calendar
 
 backtest:
   initial_capital: 1000000

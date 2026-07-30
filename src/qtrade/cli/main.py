@@ -16,6 +16,10 @@ from qtrade.data.validation import DataValidator
 from qtrade.domain import Dataset
 from qtrade.factors.service import FactorAnalysisService
 from qtrade.futures.audit import FuturesDataAuditService
+from qtrade.futures.domain import FuturesDataset
+from qtrade.futures.service import FuturesDataService
+from qtrade.futures.storage import FuturesParquetStore
+from qtrade.futures.validation import FuturesDataValidator
 from qtrade.industry.service import IndustryAnalysisService
 from qtrade.market.service import MarketAnalysisService
 from qtrade.observation.service import ObservationService
@@ -50,6 +54,20 @@ def parse_datasets(value: str | None, defaults: list[str]) -> list[Dataset]:
     except ValueError as exc:
         valid = ", ".join(dataset.value for dataset in Dataset)
         raise ValueError(f"Unknown dataset. Valid values: {valid}") from exc
+
+
+def parse_futures_datasets(
+    value: str | None,
+    defaults: list[str],
+) -> tuple[FuturesDataset, ...]:
+    names = defaults if value is None else [item.strip() for item in value.split(",")]
+    if not any(names):
+        raise ValueError("At least one futures dataset is required.")
+    try:
+        return tuple(dict.fromkeys(FuturesDataset(name) for name in names if name))
+    except ValueError as exc:
+        valid = ", ".join(dataset.value for dataset in FuturesDataset)
+        raise ValueError(f"Unknown futures dataset. Valid values: {valid}") from exc
 
 
 def build_service(config: AppConfig) -> DataIngestionService:
@@ -185,6 +203,20 @@ def build_futures_audit_service(config: AppConfig) -> FuturesDataAuditService:
     )
 
 
+def build_futures_data_service(config: AppConfig) -> FuturesDataService:
+    config.paths.create()
+    provider = TushareProvider(config.provider, config.market)
+    return FuturesDataService(
+        source=provider,
+        exchanges=config.futures.exchanges,
+        raw_store=FuturesParquetStore(config.paths.raw, "raw"),
+        curated_store=FuturesParquetStore(config.paths.curated, "curated"),
+        validator=FuturesDataValidator(),
+        reports_root=config.paths.reports,
+        secrets=(config.provider.token(),),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qtrade", description="QTrade research toolkit")
     parser.add_argument("--config", default="config/base.yaml", help="YAML configuration path")
@@ -277,6 +309,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Audit futures API permissions and current contract rule coverage",
     )
     futures_audit.add_argument("--date", required=True, type=parse_date)
+    futures_update = futures_commands.add_parser(
+        "update",
+        help="Update standardized futures datasets for one trading date",
+    )
+    futures_update.add_argument("--date", required=True, type=parse_date)
+    futures_update.add_argument("--datasets", help="Comma-separated dataset names")
+    futures_backfill = futures_commands.add_parser(
+        "backfill",
+        help="Backfill standardized futures daily datasets",
+    )
+    futures_backfill.add_argument("--start", required=True, type=parse_date)
+    futures_backfill.add_argument("--end", required=True, type=parse_date)
+    futures_backfill.add_argument("--datasets", help="Comma-separated dataset names")
+    futures_contract = futures_commands.add_parser(
+        "contract-backfill",
+        help="Backfill daily bars for one real futures contract",
+    )
+    futures_contract.add_argument("--ts-code", required=True)
+    futures_contract.add_argument("--start", required=True, type=parse_date)
+    futures_contract.add_argument("--end", required=True, type=parse_date)
+    futures_commands.add_parser(
+        "datasets",
+        help="List supported futures datasets",
+    )
 
     analyze = commands.add_parser("analyze", help="Research analysis")
     analyze_commands = analyze.add_subparsers(dest="analyze_command", required=True)
@@ -325,9 +381,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     protocol = commands.add_parser("protocol", help="Anti-overfitting research protocols")
-    protocol_commands = protocol.add_subparsers(
-        dest="protocol_command", required=True
-    )
+    protocol_commands = protocol.add_subparsers(dest="protocol_command", required=True)
     protocol_create = protocol_commands.add_parser(
         "create", help="Create a draft strategy protocol"
     )
@@ -426,9 +480,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     dashboard = commands.add_parser("dashboard", help="Local read-only dashboard")
-    dashboard_commands = dashboard.add_subparsers(
-        dest="dashboard_command", required=True
-    )
+    dashboard_commands = dashboard.add_subparsers(dest="dashboard_command", required=True)
     dashboard_build = dashboard_commands.add_parser(
         "build", help="Build dashboard from existing reports"
     )
@@ -449,6 +501,11 @@ def _print_update(result) -> None:
     for item in result.datasets:
         if item.status == "completed":
             print(f"[OK] {item.dataset.value}: {item.row_count} rows")
+        elif item.status == "unavailable":
+            print(
+                f"[UNAVAILABLE] {item.dataset.value}: {item.error}",
+                file=sys.stderr,
+            )
         else:
             print(f"[FAILED] {item.dataset.value}: {item.error}", file=sys.stderr)
     print(f"Update status: {'success' if result.succeeded else 'failed'}")
@@ -471,24 +528,61 @@ def run(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     if args.command == "futures":
         try:
-            result = build_futures_audit_service(config).run(args.date)
-            for item in result.report.query_checks:
-                scope = item.exchange or "ALL"
-                state = "OK" if item.passed else "FAILED"
+            if args.futures_command == "datasets":
+                for dataset in FuturesDataset:
+                    print(dataset.value)
+                return 0
+            if args.futures_command == "audit":
+                result = build_futures_audit_service(config).run(args.date)
+                for item in result.report.query_checks:
+                    scope = item.exchange or "ALL"
+                    state = "OK" if item.passed else "FAILED"
+                    print(f"[{state}] {item.endpoint}/{scope}: {item.row_count} rows")
                 print(
-                    f"[{state}] {item.endpoint}/{scope}: "
-                    f"{item.row_count} rows"
+                    "Phase 1 futures data foundation ready: "
+                    f"{result.report.ready_for_data_foundation}"
                 )
-            print(
-                "Phase 1 futures data foundation ready: "
-                f"{result.report.ready_for_data_foundation}"
-            )
-            print(
-                "Phase 3 futures backtest ready: "
-                f"{result.report.ready_for_backtest}"
-            )
-            print(f"Report: {result.markdown_path}")
-            return 0 if result.report.ready_for_data_foundation else 1
+                print(f"Phase 3 futures backtest ready: {result.report.ready_for_backtest}")
+                print(f"Report: {result.markdown_path}")
+                return 0 if result.report.ready_for_data_foundation else 1
+            service = build_futures_data_service(config)
+            if args.futures_command == "update":
+                datasets = parse_futures_datasets(
+                    args.datasets,
+                    config.futures.update_datasets,
+                )
+                result = service.update(args.date, datasets)
+                _print_update(result)
+                print(f"Quality report: {result.quality_report}")
+                return 0 if result.succeeded else 1
+            if args.futures_command == "backfill":
+                defaults = [
+                    FuturesDataset.DAILY.value,
+                    FuturesDataset.SETTLEMENTS.value,
+                    FuturesDataset.MAPPINGS.value,
+                    FuturesDataset.LIMITS.value,
+                ]
+                datasets = parse_futures_datasets(args.datasets, defaults)
+                result = service.backfill(args.start, args.end, datasets)
+                print(
+                    f"Trading dates: {result.trading_dates}; "
+                    f"completed: {result.completed_dates}; "
+                    f"skipped: {result.skipped_dates}; "
+                    f"failed: {len(result.failed_dates)}"
+                )
+                return 0 if result.succeeded else 1
+            if args.futures_command == "contract-backfill":
+                result = service.backfill_contract(
+                    args.ts_code,
+                    args.start,
+                    args.end,
+                )
+                print(
+                    f"Trading dates: {result.trading_dates}; "
+                    f"written: {result.completed_dates}; "
+                    f"failed: {len(result.failed_dates)}"
+                )
+                return 0 if result.succeeded else 1
         except (OSError, RuntimeError, ValueError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
@@ -570,9 +664,7 @@ def run(args: argparse.Namespace) -> int:
                     selected = draft.partition(partition)
                     if selected.end_date is None:
                         raise ValueError("Cannot pin an open-ended partition.")
-                    data_version = build_research_service(
-                        config
-                    ).candidate_data_version(
+                    data_version = build_research_service(config).candidate_data_version(
                         selected.start_date,
                         selected.end_date,
                     )
@@ -609,10 +701,7 @@ def run(args: argparse.Namespace) -> int:
                     )
                 return 0
             for item in protocols.list():
-                print(
-                    f"{item.protocol_id} v{item.version} {item.status.value} "
-                    f"{item.title}"
-                )
+                print(f"{item.protocol_id} v{item.version} {item.status.value} {item.title}")
             return 0
         except (FileExistsError, FileNotFoundError, ValueError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
@@ -698,10 +787,7 @@ def run(args: argparse.Namespace) -> int:
 
     if args.command in {"research", "backtest"}:
         try:
-            if (
-                args.command == "research"
-                and args.research_command == "build-signals"
-            ):
+            if args.command == "research" and args.research_command == "build-signals":
                 result = build_historical_signal_service(config).build(
                     args.protocol_id,
                     PartitionName(args.partition),
@@ -723,14 +809,10 @@ def run(args: argparse.Namespace) -> int:
                     config.research = type(config.research).model_validate(
                         {**config.research.model_dump(), **updates}
                     )
-                result = build_research_service(config).research_factors(
-                    args.start, args.end
-                )
+                result = build_research_service(config).research_factors(args.start, args.end)
                 analysis = result.analysis
                 spread = (
-                    analysis.top_bottom_spread
-                    if analysis.top_bottom_spread is not None
-                    else "N/A"
+                    analysis.top_bottom_spread if analysis.top_bottom_spread is not None else "N/A"
                 )
                 print(
                     f"Evaluated snapshots: {analysis.evaluated_snapshot_count}/"
@@ -934,11 +1016,7 @@ def run(args: argparse.Namespace) -> int:
         if args.data_command == "coverage":
             result = service.research_coverage(args.start, args.end)
             for item in result.items:
-                first_missing = (
-                    item.missing_dates[0].isoformat()
-                    if item.missing_dates
-                    else "-"
-                )
+                first_missing = item.missing_dates[0].isoformat() if item.missing_dates else "-"
                 print(
                     f"{item.dataset.value}: {item.existing_dates}/"
                     f"{item.expected_dates} ({item.frequency}); "

@@ -165,6 +165,17 @@ class FuturesConfig(BaseModel):
     excluded_product_codes: list[str] = Field(
         default_factory=lambda: ["SCTAS", "L_F", "PP_F", "V_F"]
     )
+    update_datasets: list[str] = Field(
+        default_factory=lambda: [
+            "futures_contracts",
+            "futures_contract_rules",
+            "futures_daily",
+            "futures_settlements",
+            "futures_mappings",
+            "futures_limits",
+            "futures_calendar",
+        ]
+    )
 
     @field_validator("exchanges")
     @classmethod

@@ -22,6 +22,40 @@ def test_futures_audit_command_parses() -> None:
     assert args.date == date(2026, 7, 24)
 
 
+def test_futures_data_commands_parse() -> None:
+    parser = build_parser()
+
+    update = parser.parse_args(
+        ["futures", "update", "--date", "2026-07-24"]
+    )
+    backfill = parser.parse_args(
+        [
+            "futures",
+            "backfill",
+            "--start",
+            "2026-07-01",
+            "--end",
+            "2026-07-24",
+        ]
+    )
+    contract = parser.parse_args(
+        [
+            "futures",
+            "contract-backfill",
+            "--ts-code",
+            "CU2608.SHF",
+            "--start",
+            "2026-07-01",
+            "--end",
+            "2026-07-24",
+        ]
+    )
+
+    assert update.futures_command == "update"
+    assert backfill.futures_command == "backfill"
+    assert contract.ts_code == "CU2608.SHF"
+
+
 def test_industry_analysis_command_parses() -> None:
     args = build_parser().parse_args(["analyze", "industry", "--date", "2026-07-24"])
 

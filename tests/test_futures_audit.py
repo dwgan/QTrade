@@ -95,10 +95,9 @@ def test_futures_audit_writes_ready_report(tmp_path: Path) -> None:
     assert result.report.mapping_rows == 1
     assert result.report.exchanges[0].liquid_product_codes == ["CU"]
     assert result.report.exchanges[0].contracts_missing_unit == 0
+    assert result.report.exchanges[0].settlements_missing_margin == 0
     assert result.json_path.is_file()
-    assert "期货数据可行性审计" in result.markdown_path.read_text(
-        encoding="utf-8"
-    )
+    assert "期货数据可行性审计" in result.markdown_path.read_text(encoding="utf-8")
 
 
 class FailingFuturesSource(FakeFuturesSource):
@@ -106,6 +105,17 @@ class FailingFuturesSource(FakeFuturesSource):
         if operation == "ft_limit":
             raise RuntimeError("permission denied for secret-value")
         return super().query(operation, **params)
+
+
+class MissingMarginFuturesSource(FakeFuturesSource):
+    def query(self, operation: str, **params: Any) -> pl.DataFrame:
+        frame = super().query(operation, **params)
+        if operation == "fut_settle":
+            return frame.with_columns(
+                pl.lit(None).alias("long_margin_rate"),
+                pl.lit(None).alias("short_margin_rate"),
+            )
+        return frame
 
 
 def test_futures_audit_continues_after_permission_failure(
@@ -124,8 +134,21 @@ def test_futures_audit_continues_after_permission_failure(
     assert not result.report.ready_for_backtest
     assert not result.report.blockers
     assert result.report.backtest_blockers
-    failure = next(
-        item for item in result.report.query_checks if item.endpoint == "ft_limit"
-    )
+    failure = next(item for item in result.report.query_checks if item.endpoint == "ft_limit")
     assert failure.error == "permission denied for ***"
     assert result.json_path.is_file()
+
+
+def test_missing_margin_blocks_backtest_not_data_foundation(
+    tmp_path: Path,
+) -> None:
+    result = FuturesDataAuditService(
+        MissingMarginFuturesSource(),
+        FuturesConfig(exchanges=["SHFE"]),
+        tmp_path,
+    ).run(date(2026, 7, 24))
+
+    assert result.report.ready_for_data_foundation
+    assert not result.report.ready_for_backtest
+    assert result.report.exchanges[0].settlements_missing_margin == 1
+    assert any("保证金比例" in item for item in result.report.backtest_blockers)

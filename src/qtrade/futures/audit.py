@@ -160,7 +160,11 @@ class FuturesDataAuditService:
             for exchange in self.config.exchanges
         ]
         blockers = self._blockers(checks, exchange_coverage)
-        backtest_blockers = self._backtest_blockers(checks, blockers)
+        backtest_blockers = self._backtest_blockers(
+            checks,
+            exchange_coverage,
+            blockers,
+        )
         warnings = self._warnings(checks, exchange_coverage, mappings)
         report = FuturesAuditReport(
             as_of_date=as_of_date,
@@ -235,6 +239,7 @@ class FuturesDataAuditService:
                 daily_contracts=daily.height,
                 daily_products=0,
                 settlement_contracts=settlements.height,
+                settlements_missing_margin=0,
                 limit_contracts=0,
                 contracts_missing_unit=0,
                 contracts_missing_trading_hours=0,
@@ -260,10 +265,7 @@ class FuturesDataAuditService:
                 )
                 .filter(
                     (pl.col("volume") >= self.config.audit_minimum_daily_volume)
-                    & (
-                        pl.col("open_interest")
-                        >= self.config.audit_minimum_open_interest
-                    )
+                    & (pl.col("open_interest") >= self.config.audit_minimum_open_interest)
                     & ~pl.col("fut_code").is_in(
                         self.config.excluded_product_codes,
                     )
@@ -274,22 +276,42 @@ class FuturesDataAuditService:
                 .to_list()
             )
 
-        unit_missing = active.filter(
-            pl.col("multiplier").cast(pl.Float64, strict=False).fill_null(0)
-            <= 0
-        ).filter(
-            pl.col("per_unit").cast(pl.Float64, strict=False).fill_null(0)
-            <= 0
-        ).height
+        unit_missing = (
+            active.filter(pl.col("multiplier").cast(pl.Float64, strict=False).fill_null(0) <= 0)
+            .filter(pl.col("per_unit").cast(pl.Float64, strict=False).fill_null(0) <= 0)
+            .height
+        )
         hours_missing = active.filter(
             pl.col("trade_time_desc").is_null()
             | (pl.col("trade_time_desc").cast(pl.String).str.strip_chars() == "")
         ).height
         limit_contracts = 0
         if {"ts_code", "exchange"} <= set(limits.columns):
-            limit_contracts = limits.filter(
-                pl.col("exchange").cast(pl.String) == exchange
-            ).get_column("ts_code").n_unique()
+            limit_contracts = (
+                limits.filter(pl.col("exchange").cast(pl.String) == exchange)
+                .get_column("ts_code")
+                .n_unique()
+            )
+        missing_margin = 0
+        if {
+            "long_margin_rate",
+            "short_margin_rate",
+        } <= set(settlements.columns):
+            missing_margin = (
+                settlements.with_columns(
+                    pl.col("long_margin_rate").cast(pl.Float64, strict=False).alias("_long_margin"),
+                    pl.col("short_margin_rate")
+                    .cast(pl.Float64, strict=False)
+                    .alias("_short_margin"),
+                )
+                .filter(
+                    pl.col("_long_margin").is_null()
+                    | pl.col("_short_margin").is_null()
+                    | (pl.col("_long_margin") <= 0)
+                    | (pl.col("_short_margin") <= 0)
+                )
+                .height
+            )
 
         return FuturesExchangeCoverage(
             exchange=exchange,
@@ -304,6 +326,7 @@ class FuturesDataAuditService:
             settlement_contracts=settlements.get_column("ts_code").n_unique()
             if "ts_code" in settlements.columns
             else 0,
+            settlements_missing_margin=missing_margin,
             limit_contracts=limit_contracts,
             contracts_missing_unit=unit_missing,
             contracts_missing_trading_hours=hours_missing,
@@ -345,6 +368,7 @@ class FuturesDataAuditService:
     @staticmethod
     def _backtest_blockers(
         checks: list[FuturesQueryCheck],
+        exchanges: list[FuturesExchangeCoverage],
         foundation_blockers: list[str],
     ) -> list[str]:
         blockers = list(foundation_blockers)
@@ -356,6 +380,11 @@ class FuturesDataAuditService:
             )
             for check in checks
             if not check.passed and check.endpoint == "ft_limit"
+        )
+        blockers.extend(
+            f"{item.exchange} 有 {item.settlements_missing_margin} 条结算记录缺少可用保证金比例"
+            for item in exchanges
+            if item.settlements_missing_margin
         )
         return list(dict.fromkeys(blockers))
 
@@ -369,8 +398,7 @@ class FuturesDataAuditService:
         for item in exchanges:
             if item.contracts_missing_unit:
                 warnings.append(
-                    f"{item.exchange} 有 {item.contracts_missing_unit} 个在市合约"
-                    "缺少可用交易单位。"
+                    f"{item.exchange} 有 {item.contracts_missing_unit} 个在市合约缺少可用交易单位。"
                 )
             if item.contracts_missing_trading_hours:
                 warnings.append(
@@ -384,9 +412,7 @@ class FuturesDataAuditService:
                 )
         if mappings.is_empty():
             warnings.append("主力映射为空，暂时不能验证供应商换月覆盖。")
-        if not any(
-            check.endpoint == "ft_limit" and check.passed for check in checks
-        ):
+        if not any(check.endpoint == "ft_limit" and check.passed for check in checks):
             warnings.append(
                 "当前数据源未取得官方 ft_limit 涨跌停数据；阶段 1 数据底座可继续，"
                 "但阶段 3 回测前必须从交易所或其他数据源补齐，否则无法正确模拟"
@@ -395,12 +421,7 @@ class FuturesDataAuditService:
         return warnings
 
     def _write(self, report: FuturesAuditReport) -> tuple[Path, Path]:
-        directory = (
-            self.reports_root
-            / "futures"
-            / "audit"
-            / report.as_of_date.isoformat()
-        )
+        directory = self.reports_root / "futures" / "audit" / report.as_of_date.isoformat()
         directory.mkdir(parents=True, exist_ok=True)
         json_path = directory / "audit.json"
         markdown_path = directory / "audit.md"
@@ -416,10 +437,8 @@ class FuturesDataAuditService:
             f"# 期货数据可行性审计：{report.as_of_date}",
             "",
             f"- 数据源：{report.provider}",
-            f"- 阶段 1 数据底座就绪："
-            f"{'是' if report.ready_for_data_foundation else '否'}",
-            f"- 阶段 3 回测内核就绪："
-            f"{'是' if report.ready_for_backtest else '否'}",
+            f"- 阶段 1 数据底座就绪：{'是' if report.ready_for_data_foundation else '否'}",
+            f"- 阶段 3 回测内核就绪：{'是' if report.ready_for_backtest else '否'}",
             f"- 主力映射：{report.mapping_rows} 行",
             "",
             "## 接口检查",
@@ -443,14 +462,15 @@ class FuturesDataAuditService:
                 "## 市场覆盖",
                 "",
                 "| 市场 | 在市合约 | 上市品种 | 日线合约/品种 | 结算参数 | 涨跌停 |"
-                " 单位缺失 | 时段缺失 |",
-                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+                " 保证金缺失 | 单位缺失 | 时段缺失 |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
         lines.extend(
             f"| {item.exchange} | {item.active_contracts} | {item.listed_products} | "
             f"{item.daily_contracts}/{item.daily_products} | "
             f"{item.settlement_contracts} | {item.limit_contracts} | "
+            f"{item.settlements_missing_margin} | "
             f"{item.contracts_missing_unit} | "
             f"{item.contracts_missing_trading_hours} |"
             for item in report.exchanges

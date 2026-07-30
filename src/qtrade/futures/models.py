@@ -21,6 +21,7 @@ class FuturesExchangeCoverage(BaseModel):
     daily_contracts: int
     daily_products: int
     settlement_contracts: int
+    settlements_missing_margin: int
     limit_contracts: int
     contracts_missing_unit: int
     contracts_missing_trading_hours: int

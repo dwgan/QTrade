@@ -25,6 +25,7 @@ class TushareProvider:
             "fut_mapping",
             "fut_settle",
             "ft_limit",
+            "trade_cal",
         }
     )
 
