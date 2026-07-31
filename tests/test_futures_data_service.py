@@ -153,7 +153,7 @@ def test_update_persists_all_standardized_futures_datasets(
         date(2026, 7, 24),
     )
     assert len(rules["rule_hash"][0]) == 64
-    assert rules["observed_at"][0] == "20260724"
+    assert rules["observed_at"][0] == date.today().strftime("%Y%m%d")
     assert result.quality_report and result.quality_report.is_file()
 
 
@@ -239,3 +239,21 @@ def test_contract_backfill_partitions_bulk_response_by_date(
         date(2026, 7, 23),
     )
     assert stored.height == 1
+
+
+def test_store_reads_available_partitions_in_date_order(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    service.backfill_contract(
+        "CU2608.SHF",
+        date(2026, 7, 23),
+        date(2026, 7, 24),
+    )
+
+    stored = service.curated_store.read_range(
+        FuturesDataset.DAILY,
+        "fake",
+        date(2026, 7, 23),
+        date(2026, 7, 24),
+    )
+
+    assert stored.get_column("trade_date").to_list() == ["20260723", "20260724"]

@@ -17,6 +17,7 @@ from qtrade.domain import Dataset
 from qtrade.factors.service import FactorAnalysisService
 from qtrade.futures.audit import FuturesDataAuditService
 from qtrade.futures.domain import FuturesDataset
+from qtrade.futures.research import FuturesResearchService
 from qtrade.futures.service import FuturesDataService
 from qtrade.futures.storage import FuturesParquetStore
 from qtrade.futures.validation import FuturesDataValidator
@@ -217,6 +218,16 @@ def build_futures_data_service(config: AppConfig) -> FuturesDataService:
     )
 
 
+def build_futures_research_service(config: AppConfig) -> FuturesResearchService:
+    config.paths.create()
+    return FuturesResearchService(
+        config=config.futures,
+        curated_store=FuturesParquetStore(config.paths.curated, "curated"),
+        provider=config.provider.name,
+        reports_root=config.paths.reports,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qtrade", description="QTrade research toolkit")
     parser.add_argument("--config", default="config/base.yaml", help="YAML configuration path")
@@ -329,6 +340,12 @@ def build_parser() -> argparse.ArgumentParser:
     futures_contract.add_argument("--ts-code", required=True)
     futures_contract.add_argument("--start", required=True, type=parse_date)
     futures_contract.add_argument("--end", required=True, type=parse_date)
+    futures_series = futures_commands.add_parser(
+        "build-series",
+        help="Build immutable point-in-time rolls, continuous series, and universe",
+    )
+    futures_series.add_argument("--start", required=True, type=parse_date)
+    futures_series.add_argument("--end", required=True, type=parse_date)
     futures_commands.add_parser(
         "datasets",
         help="List supported futures datasets",
@@ -545,6 +562,22 @@ def run(args: argparse.Namespace) -> int:
                 print(f"Phase 3 futures backtest ready: {result.report.ready_for_backtest}")
                 print(f"Report: {result.markdown_path}")
                 return 0 if result.report.ready_for_data_foundation else 1
+            if args.futures_command == "build-series":
+                result = build_futures_research_service(config).build(
+                    args.start,
+                    args.end,
+                )
+                state = "reused" if result.reused else "created"
+                print(f"Build: {result.build_id} ({state})")
+                print(
+                    f"Roll rows: {result.roll_rows}; "
+                    f"continuous rows: {result.continuous_rows}; "
+                    f"universe rows: {result.universe_rows}; "
+                    f"quality issues: {result.issue_count}"
+                )
+                print(f"Manifest: {result.manifest_path}")
+                print(f"Quality report: {result.report_path}")
+                return 0 if result.passed else 1
             service = build_futures_data_service(config)
             if args.futures_command == "update":
                 datasets = parse_futures_datasets(

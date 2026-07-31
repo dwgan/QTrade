@@ -50,10 +50,22 @@ def test_futures_data_commands_parse() -> None:
             "2026-07-24",
         ]
     )
+    series = parser.parse_args(
+        [
+            "futures",
+            "build-series",
+            "--start",
+            "2026-07-01",
+            "--end",
+            "2026-07-24",
+        ]
+    )
 
     assert update.futures_command == "update"
     assert backfill.futures_command == "backfill"
     assert contract.ts_code == "CU2608.SHF"
+    assert series.futures_command == "build-series"
+    assert series.start == date(2026, 7, 1)
 
 
 def test_industry_analysis_command_parses() -> None:

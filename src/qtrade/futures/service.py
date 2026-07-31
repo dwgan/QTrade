@@ -4,7 +4,7 @@ import json
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -362,6 +362,7 @@ class FuturesDataService:
         write_raw: bool = True,
         merge_existing: bool = False,
     ) -> None:
+        fetched_at = datetime.now()
         raw_path: Path | None = None
         if write_raw:
             raw_frame = (
@@ -380,10 +381,16 @@ class FuturesDataService:
                     self.source.name,
                     as_of_date,
                     raw_frame,
+                    fetched_at=fetched_at,
                     request={**request, "merged_existing": merge_existing},
                 )
             )
-        curated = normalize_futures_dataset(dataset, frame, as_of_date)
+        curated = normalize_futures_dataset(
+            dataset,
+            frame,
+            as_of_date,
+            observed_at=fetched_at.date(),
+        )
         if merge_existing:
             curated = self._merge_existing(
                 self.curated_store,
@@ -395,6 +402,7 @@ class FuturesDataService:
                 dataset,
                 curated,
                 as_of_date,
+                observed_at=fetched_at.date(),
             )
         curated_path = self.curated_store.write(
             FuturesDataBatch(
@@ -402,6 +410,7 @@ class FuturesDataService:
                 self.source.name,
                 as_of_date,
                 curated,
+                fetched_at=fetched_at,
                 request={
                     **request,
                     "normalized": True,

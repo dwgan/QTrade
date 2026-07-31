@@ -176,6 +176,15 @@ class FuturesConfig(BaseModel):
             "futures_calendar",
         ]
     )
+    roll_confirmation_days: int = Field(default=2, ge=1, le=10)
+    roll_expiry_buffer_calendar_days: int = Field(default=15, ge=1, le=90)
+    universe_lookback_days: int = Field(default=20, ge=1, le=250)
+    universe_min_history_days: int = Field(default=20, ge=1, le=250)
+    universe_min_contracts: int = Field(default=2, ge=1, le=12)
+    universe_minimum_daily_volume: float = Field(default=1000, ge=0)
+    universe_minimum_open_interest: float = Field(default=1000, ge=0)
+    universe_minimum_daily_amount: float = Field(default=0, ge=0)
+    continuous_max_abs_return: float = Field(default=0.25, gt=0, le=1)
 
     @field_validator("exchanges")
     @classmethod

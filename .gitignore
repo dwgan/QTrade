@@ -9,6 +9,7 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+.tmp/
 
 # Local datasets, generated reports and runtime state
 /data/

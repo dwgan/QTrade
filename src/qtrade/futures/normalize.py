@@ -31,16 +31,17 @@ def normalize_futures_dataset(
     dataset: FuturesDataset,
     frame: pl.DataFrame,
     as_of_date: date,
+    observed_at: date | None = None,
 ) -> pl.DataFrame:
     if frame.is_empty():
         return frame.clone()
     normalized = frame.rename({name: name.strip().lower() for name in frame.columns})
     if dataset == FuturesDataset.CONTRACTS:
         normalized = normalized.with_columns(
-            pl.lit(as_of_date.strftime("%Y%m%d")).alias("observed_at")
+            pl.lit((observed_at or as_of_date).strftime("%Y%m%d")).alias("observed_at")
         )
     elif dataset == FuturesDataset.CONTRACT_RULES:
-        normalized = _build_rule_versions(normalized, as_of_date)
+        normalized = _build_rule_versions(normalized, observed_at or as_of_date)
 
     schema = futures_schema_for(dataset)
     keys = [name for name in schema.primary_key if name in normalized.columns]

@@ -84,6 +84,46 @@ class FuturesParquetStore:
     ) -> bool:
         return self.data_path(dataset, provider, as_of_date).exists()
 
+    def available_dates(
+        self,
+        dataset: FuturesDataset,
+        provider: str,
+        start_date: date,
+        end_date: date,
+    ) -> list[date]:
+        provider_dir = self.root / "futures" / dataset.value / f"provider={provider}"
+        if not provider_dir.exists():
+            return []
+        dates: list[date] = []
+        for partition in provider_dir.glob("as_of_date=*"):
+            try:
+                value = date.fromisoformat(partition.name.removeprefix("as_of_date="))
+            except ValueError:
+                continue
+            if start_date <= value <= end_date and (partition / "data.parquet").exists():
+                dates.append(value)
+        return sorted(dates)
+
+    def read_range(
+        self,
+        dataset: FuturesDataset,
+        provider: str,
+        start_date: date,
+        end_date: date,
+    ) -> pl.DataFrame:
+        if start_date > end_date:
+            raise ValueError("Futures range start date must not exceed end date.")
+        frames = [
+            self.read(dataset, provider, as_of_date)
+            for as_of_date in self.available_dates(
+                dataset,
+                provider,
+                start_date,
+                end_date,
+            )
+        ]
+        return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+
     @staticmethod
     def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
