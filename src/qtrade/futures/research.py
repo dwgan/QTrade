@@ -103,7 +103,7 @@ class FuturesResearchService:
         )
         input_versions = [self._file_version(path) for path in input_paths]
         build_payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "provider": self.provider,
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
@@ -246,6 +246,10 @@ class FuturesResearchService:
             for name, frame in frames.items():
                 destination = temporary_dir / self.OUTPUT_FILES[name]
                 frame.write_parquet(destination, compression="zstd")
+            manifest["output_versions"] = [
+                self._output_version(temporary_dir / filename, filename)
+                for filename in self.OUTPUT_FILES.values()
+            ]
             self._atomic_json(temporary_dir / "manifest.json", manifest)
             os.replace(temporary_dir, output_dir)
         except Exception:
@@ -306,6 +310,14 @@ class FuturesResearchService:
         return {
             "path": path.relative_to(self.curated_store.root).as_posix(),
             "sha256": digest.hexdigest(),
+            "size": path.stat().st_size,
+        }
+
+    @staticmethod
+    def _output_version(path: Path, filename: str) -> dict[str, Any]:
+        return {
+            "path": filename,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "size": path.stat().st_size,
         }
 

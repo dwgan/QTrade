@@ -63,6 +63,9 @@ def test_futures_data_commands_parse() -> None:
     backtest = parser.parse_args(
         ["futures", "backtest", "--input", "runtime/futures-backtest.json"]
     )
+    trend = parser.parse_args(
+        ["futures", "trend", "--input", "runtime/futures-trend.json"]
+    )
 
     assert update.futures_command == "update"
     assert backfill.futures_command == "backfill"
@@ -71,6 +74,8 @@ def test_futures_data_commands_parse() -> None:
     assert series.start == date(2026, 7, 1)
     assert backtest.futures_command == "backtest"
     assert backtest.input.name == "futures-backtest.json"
+    assert trend.futures_command == "trend"
+    assert trend.input.name == "futures-trend.json"
 
 
 def test_industry_analysis_command_parses() -> None:

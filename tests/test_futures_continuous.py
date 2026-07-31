@@ -160,9 +160,13 @@ def test_research_build_is_content_addressed_and_reused(tmp_path: Path) -> None:
     assert first.manifest_path.is_file()
     assert first.report_path.is_file()
     manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 2
     assert manifest["contract_master_partition_date"] == "2026-01-05"
     assert manifest["contract_master_observed_at"] == "2026-01-05"
     assert any(item["path"].endswith("metadata.json") for item in manifest["inputs"])
+    assert {item["path"] for item in manifest["output_versions"]} == set(
+        service.OUTPUT_FILES.values()
+    )
     assert second.build_id == first.build_id
     assert second.reused
 

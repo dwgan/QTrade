@@ -21,6 +21,7 @@ from qtrade.futures.domain import FuturesDataset
 from qtrade.futures.research import FuturesResearchService
 from qtrade.futures.service import FuturesDataService
 from qtrade.futures.storage import FuturesParquetStore
+from qtrade.futures.trend_service import FuturesTrendService
 from qtrade.futures.validation import FuturesDataValidator
 from qtrade.industry.service import IndustryAnalysisService
 from qtrade.market.service import MarketAnalysisService
@@ -238,6 +239,14 @@ def build_futures_backtest_service(config: AppConfig) -> FuturesBacktestService:
     )
 
 
+def build_futures_trend_service(config: AppConfig) -> FuturesTrendService:
+    config.paths.create()
+    return FuturesTrendService(
+        curated_root=config.paths.curated,
+        reports_root=config.paths.reports,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qtrade", description="QTrade research toolkit")
     parser.add_argument("--config", default="config/base.yaml", help="YAML configuration path")
@@ -361,6 +370,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build an immutable actual-contract futures backtest from a frozen input",
     )
     futures_backtest.add_argument("--input", required=True, type=Path)
+    futures_trend = futures_commands.add_parser(
+        "trend",
+        help="Build an immutable point-in-time futures trend target snapshot",
+    )
+    futures_trend.add_argument("--input", required=True, type=Path)
     futures_commands.add_parser(
         "datasets",
         help="List supported futures datasets",
@@ -605,6 +619,17 @@ def run(args: argparse.Namespace) -> int:
                 print(f"Manifest: {result.manifest_path}")
                 print(f"Quality report: {result.report_path}")
                 return 0 if result.passed else 1
+            if args.futures_command == "trend":
+                result = build_futures_trend_service(config).build(args.input)
+                state = "reused" if result.reused else "created"
+                print(f"Build: {result.build_id} ({state})")
+                print(
+                    f"Targets: {result.target_rows}; "
+                    f"insufficient capital: {result.insufficient_capital_rows}"
+                )
+                print(f"Manifest: {result.manifest_path}")
+                print(f"Report: {result.report_path}")
+                return 0
             service = build_futures_data_service(config)
             if args.futures_command == "update":
                 datasets = parse_futures_datasets(
