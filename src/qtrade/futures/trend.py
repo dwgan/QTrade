@@ -10,6 +10,7 @@ from typing import Any
 
 import polars as pl
 
+from qtrade.futures.trend_buffer import FuturesPositionBuffer, FuturesPositionBufferPolicy
 from qtrade.futures.trend_risk import (
     FuturesPortfolioRiskAllocator,
     FuturesPortfolioRiskCandidate,
@@ -29,6 +30,8 @@ class FuturesTrendProtocol:
     initial_margin_fraction: float = 0.25
     stress_margin_fraction: float = 0.50
     stress_margin_multiplier: float = 1.50
+    position_buffer_fraction: float = 0.10
+    position_buffer_minimum_lots: int = 1
 
     def __post_init__(self) -> None:
         if not self.lookbacks or len(self.lookbacks) != len(self.weights):
@@ -50,6 +53,10 @@ class FuturesTrendProtocol:
         self._fraction("stress_margin_fraction")
         if not math.isfinite(self.stress_margin_multiplier) or self.stress_margin_multiplier < 1:
             raise ValueError("stress_margin_multiplier must be finite and at least one.")
+        FuturesPositionBufferPolicy(
+            relative_threshold=self.position_buffer_fraction,
+            minimum_lots=self.position_buffer_minimum_lots,
+        )
 
     @property
     def protocol_id(self) -> str:
@@ -76,6 +83,9 @@ class FuturesTrendTarget:
     one_lot_daily_risk: float
     one_lot_initial_margin: float
     unconstrained_signed_lots: int
+    buffered_signed_lots: int
+    buffer_applied: bool
+    buffer_reason: str | None
     target_signed_lots: int
     initial_margin: float
     stress_margin: float
@@ -109,6 +119,7 @@ class FuturesTrendEngine:
         universe: pl.DataFrame,
         roll_schedule: pl.DataFrame,
         contracts: pl.DataFrame,
+        previous_targets: dict[str, int] | None = None,
     ) -> FuturesTrendResult:
         if signal_date >= eligible_date:
             raise ValueError("Trend targets require an eligible date after the signal date.")
@@ -159,23 +170,27 @@ class FuturesTrendEngine:
             )
             for product_code in eligible_products
         )
+        buffered_targets = tuple(
+            self._buffer_target(target, (previous_targets or {}).get(target.product_code, 0))
+            for target in unconstrained_targets
+        )
         risk_result = FuturesPortfolioRiskAllocator(self._risk_limits()).allocate(
             equity,
             [
                 FuturesPortfolioRiskCandidate(
                     product_code=target.product_code,
                     sector=target.sector,
-                    signed_lots=target.unconstrained_signed_lots,
+                    signed_lots=target.buffered_signed_lots,
                     one_lot_daily_risk=target.one_lot_daily_risk,
                     one_lot_initial_margin=target.one_lot_initial_margin,
                 )
-                for target in unconstrained_targets
+                for target in buffered_targets
             ],
         )
         allocations = {item.product_code: item for item in risk_result.allocations}
         targets = tuple(
             self._apply_allocation(target, allocations[target.product_code])
-            for target in unconstrained_targets
+            for target in buffered_targets
         )
         return FuturesTrendResult(
             protocol_id=self.protocol.protocol_id,
@@ -294,6 +309,9 @@ class FuturesTrendEngine:
             one_lot_daily_risk=one_lot_daily_risk,
             one_lot_initial_margin=one_lot_initial_margin,
             unconstrained_signed_lots=signed_lots,
+            buffered_signed_lots=signed_lots,
+            buffer_applied=False,
+            buffer_reason=None,
             target_signed_lots=signed_lots,
             initial_margin=abs(signed_lots) * one_lot_initial_margin,
             stress_margin=(
@@ -301,6 +319,32 @@ class FuturesTrendEngine:
             ),
             limit_reasons=(),
             status=status,
+        )
+
+    def _buffer_target(
+        self,
+        target: FuturesTrendTarget,
+        previous_signed_lots: int,
+    ) -> FuturesTrendTarget:
+        result = FuturesPositionBuffer(
+            FuturesPositionBufferPolicy(
+                relative_threshold=self.protocol.position_buffer_fraction,
+                minimum_lots=self.protocol.position_buffer_minimum_lots,
+            )
+        ).apply(previous_signed_lots, target.unconstrained_signed_lots)
+        within_product_budget = (
+            abs(result.signed_lots) * target.one_lot_daily_risk
+            <= target.allocated_daily_risk + 1e-12
+        )
+        if not result.applied or not within_product_budget:
+            return target
+        return replace(
+            target,
+            buffered_signed_lots=result.signed_lots,
+            buffer_applied=True,
+            buffer_reason=result.reason,
+            target_signed_lots=result.signed_lots,
+            status="buffered",
         )
 
     def _risk_limits(self) -> FuturesPortfolioRiskLimits:
@@ -316,7 +360,7 @@ class FuturesTrendEngine:
     @staticmethod
     def _apply_allocation(target: FuturesTrendTarget, allocation: Any) -> FuturesTrendTarget:
         status = target.status
-        if target.status == "targeted" and allocation.signed_lots != target.target_signed_lots:
+        if allocation.signed_lots != target.target_signed_lots:
             status = "risk_limited" if allocation.signed_lots else "risk_limited_to_zero"
         return replace(
             target,

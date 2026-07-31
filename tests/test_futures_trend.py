@@ -152,3 +152,66 @@ def test_short_target_uses_short_margin_rate() -> None:
     assert target.signal_strength == -1.0
     assert target.target_signed_lots < 0
     assert target.one_lot_initial_margin == 800.0 * 5.0 * 0.12
+
+
+def test_previous_snapshot_buffers_small_safe_position_change() -> None:
+    signal_date, eligible_date, continuous, universe, roll_schedule, contracts = market_inputs()
+    engine = FuturesTrendEngine(FuturesTrendProtocol())
+    baseline = engine.generate(
+        signal_date,
+        eligible_date,
+        10_000_000,
+        continuous,
+        universe,
+        roll_schedule,
+        contracts,
+    )
+    desired_lots = baseline.targets[0].unconstrained_signed_lots
+
+    buffered = engine.generate(
+        signal_date,
+        eligible_date,
+        10_000_000,
+        continuous,
+        universe,
+        roll_schedule,
+        contracts,
+        previous_targets={"CU": desired_lots - 1},
+    )
+
+    target = buffered.targets[0]
+    assert target.buffer_applied
+    assert target.buffered_signed_lots == desired_lots - 1
+    assert target.target_signed_lots == desired_lots - 1
+    assert target.status == "buffered"
+
+
+def test_position_buffer_cannot_exceed_current_product_risk_budget() -> None:
+    signal_date, eligible_date, continuous, universe, roll_schedule, contracts = market_inputs()
+    engine = FuturesTrendEngine(FuturesTrendProtocol())
+    baseline = engine.generate(
+        signal_date,
+        eligible_date,
+        10_000_000,
+        continuous,
+        universe,
+        roll_schedule,
+        contracts,
+    )
+    desired_lots = baseline.targets[0].unconstrained_signed_lots
+
+    result = engine.generate(
+        signal_date,
+        eligible_date,
+        10_000_000,
+        continuous,
+        universe,
+        roll_schedule,
+        contracts,
+        previous_targets={"CU": desired_lots + 1},
+    )
+
+    target = result.targets[0]
+    assert not target.buffer_applied
+    assert target.buffered_signed_lots == desired_lots
+    assert target.target_signed_lots == desired_lots

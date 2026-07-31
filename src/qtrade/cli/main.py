@@ -625,7 +625,8 @@ def run(args: argparse.Namespace) -> int:
                 print(f"Build: {result.build_id} ({state})")
                 print(
                     f"Targets: {result.target_rows}; "
-                    f"insufficient capital: {result.insufficient_capital_rows}"
+                    f"insufficient capital: {result.insufficient_capital_rows}; "
+                    f"buffered: {result.buffered_rows}"
                 )
                 print(
                     f"Daily risk: {result.total_daily_risk:.2f}; "

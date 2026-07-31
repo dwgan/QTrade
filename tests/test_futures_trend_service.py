@@ -13,6 +13,7 @@ from qtrade.futures.trend_service import FuturesTrendService
 RESEARCH_BUILD_ID = "trend-source-1"
 SIGNAL_DATE = date(2025, 5, 11)
 ELIGIBLE_DATE = date(2025, 5, 12)
+NEXT_ELIGIBLE_DATE = date(2025, 5, 13)
 CONTRACT = "CU2607.SHF"
 
 
@@ -24,15 +25,51 @@ def file_version(path: Path, root: Path) -> dict[str, object]:
     }
 
 
-def write_source_build(curated: Path, *, eligible: bool = True) -> None:
-    daily_path = (
-        curated
-        / "futures"
-        / "futures_daily"
-        / "provider=tushare"
-        / f"as_of_date={SIGNAL_DATE.isoformat()}"
-        / "data.parquet"
-    )
+def write_source_build(
+    curated: Path,
+    *,
+    eligible: bool = True,
+    next_eligible: bool | None = None,
+) -> None:
+    next_eligible = eligible if next_eligible is None else next_eligible
+    daily_paths = []
+    settlement_paths = []
+    for trading_date in (SIGNAL_DATE, ELIGIBLE_DATE):
+        daily_path = (
+            curated
+            / "futures"
+            / "futures_daily"
+            / "provider=tushare"
+            / f"as_of_date={trading_date.isoformat()}"
+            / "data.parquet"
+        )
+        settlement_path = (
+            curated
+            / "futures"
+            / "futures_settlements"
+            / "provider=tushare"
+            / f"as_of_date={trading_date.isoformat()}"
+            / "data.parquet"
+        )
+        daily_path.parent.mkdir(parents=True)
+        settlement_path.parent.mkdir(parents=True)
+        pl.DataFrame(
+            {
+                "ts_code": [CONTRACT],
+                "trade_date": [trading_date.strftime("%Y%m%d")],
+                "settle": [800.0],
+            }
+        ).write_parquet(daily_path)
+        pl.DataFrame(
+            {
+                "ts_code": [CONTRACT],
+                "trade_date": [trading_date.strftime("%Y%m%d")],
+                "long_margin_rate": [0.10],
+                "short_margin_rate": [0.12],
+            }
+        ).write_parquet(settlement_path)
+        daily_paths.append(daily_path)
+        settlement_paths.append(settlement_path)
     contract_path = (
         curated
         / "futures"
@@ -41,33 +78,8 @@ def write_source_build(curated: Path, *, eligible: bool = True) -> None:
         / f"as_of_date={SIGNAL_DATE.isoformat()}"
         / "data.parquet"
     )
-    settlement_path = (
-        curated
-        / "futures"
-        / "futures_settlements"
-        / "provider=tushare"
-        / f"as_of_date={SIGNAL_DATE.isoformat()}"
-        / "data.parquet"
-    )
-    daily_path.parent.mkdir(parents=True)
     contract_path.parent.mkdir(parents=True)
-    settlement_path.parent.mkdir(parents=True)
-    pl.DataFrame(
-        {
-            "ts_code": [CONTRACT],
-            "trade_date": [SIGNAL_DATE.strftime("%Y%m%d")],
-            "settle": [800.0],
-        }
-    ).write_parquet(daily_path)
     pl.DataFrame({"ts_code": [CONTRACT], "multiplier": [5.0]}).write_parquet(contract_path)
-    pl.DataFrame(
-        {
-            "ts_code": [CONTRACT],
-            "trade_date": [SIGNAL_DATE.strftime("%Y%m%d")],
-            "long_margin_rate": [0.10],
-            "short_margin_rate": [0.12],
-        }
-    ).write_parquet(settlement_path)
 
     research = curated / "futures" / "research" / f"build_id={RESEARCH_BUILD_ID}"
     research.mkdir(parents=True)
@@ -84,18 +96,18 @@ def write_source_build(curated: Path, *, eligible: bool = True) -> None:
     ).write_parquet(research / "continuous.parquet")
     pl.DataFrame(
         {
-            "trade_date": [SIGNAL_DATE.isoformat()],
-            "product_code": ["CU"],
-            "eligible": [eligible],
+            "trade_date": [SIGNAL_DATE.isoformat(), ELIGIBLE_DATE.isoformat()],
+            "product_code": ["CU", "CU"],
+            "eligible": [eligible, next_eligible],
         }
     ).write_parquet(research / "universe.parquet")
     pl.DataFrame(
         {
-            "decision_date": [SIGNAL_DATE.isoformat()],
-            "effective_date": [ELIGIBLE_DATE.isoformat()],
-            "product_code": ["CU"],
-            "selected_contract": [CONTRACT],
-            "universe_eligible": [eligible],
+            "decision_date": [SIGNAL_DATE.isoformat(), ELIGIBLE_DATE.isoformat()],
+            "effective_date": [ELIGIBLE_DATE.isoformat(), NEXT_ELIGIBLE_DATE.isoformat()],
+            "product_code": ["CU", "CU"],
+            "selected_contract": [CONTRACT, CONTRACT],
+            "universe_eligible": [eligible, next_eligible],
         }
     ).write_parquet(research / "roll_schedule.parquet")
     output_versions = [
@@ -107,23 +119,32 @@ def write_source_build(curated: Path, *, eligible: bool = True) -> None:
         "passed": True,
         "provider": "tushare",
         "contract_master_partition_date": SIGNAL_DATE.isoformat(),
-        "inputs": [file_version(daily_path, curated), file_version(contract_path, curated)],
+        "inputs": [
+            *(file_version(path, curated) for path in daily_paths),
+            file_version(contract_path, curated),
+        ],
         "output_versions": output_versions,
     }
     (research / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
-def write_input(path: Path) -> None:
+def write_input(
+    path: Path,
+    *,
+    signal_date: date = SIGNAL_DATE,
+    eligible_date: date = ELIGIBLE_DATE,
+    previous_signal_build_id: str | None = None,
+) -> None:
+    payload = {
+        "research_build_id": RESEARCH_BUILD_ID,
+        "signal_date": signal_date.isoformat(),
+        "eligible_date": eligible_date.isoformat(),
+        "equity": 10_000_000,
+    }
+    if previous_signal_build_id is not None:
+        payload["previous_signal_build_id"] = previous_signal_build_id
     path.write_text(
-        json.dumps(
-            {
-                "research_build_id": RESEARCH_BUILD_ID,
-                "signal_date": SIGNAL_DATE.isoformat(),
-                "eligible_date": ELIGIBLE_DATE.isoformat(),
-                "equity": 10_000_000,
-            },
-            sort_keys=True,
-        ),
+        json.dumps(payload, sort_keys=True),
         encoding="utf-8",
     )
 
@@ -223,3 +244,76 @@ def test_trend_snapshot_rejects_missing_signal_date_margin_rates(tmp_path: Path)
         FuturesTrendService(curated, tmp_path / "reports").build(input_path)
 
     assert not (curated / "futures" / "signals").exists()
+
+
+def test_trend_snapshots_form_a_verified_daily_chain(tmp_path: Path) -> None:
+    curated = tmp_path / "curated"
+    write_source_build(curated)
+    service = FuturesTrendService(curated, tmp_path / "reports")
+    first_input = tmp_path / "first.json"
+    write_input(first_input)
+    first = service.build(first_input)
+    second_input = tmp_path / "second.json"
+    write_input(
+        second_input,
+        signal_date=ELIGIBLE_DATE,
+        eligible_date=NEXT_ELIGIBLE_DATE,
+        previous_signal_build_id=first.build_id,
+    )
+
+    second = service.build(second_input)
+
+    manifest = json.loads(second.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["previous_signal_build_id"] == first.build_id
+    assert manifest["buffered_rows"] >= 0
+    assert second.target_rows == 1
+
+
+def test_trend_chain_rejects_a_changed_previous_target_file(tmp_path: Path) -> None:
+    curated = tmp_path / "curated"
+    write_source_build(curated)
+    service = FuturesTrendService(curated, tmp_path / "reports")
+    first_input = tmp_path / "first.json"
+    write_input(first_input)
+    first = service.build(first_input)
+    targets_path = first.output_dir / "targets.parquet"
+    pl.read_parquet(targets_path).with_columns(
+        pl.lit(999).alias("target_signed_lots")
+    ).write_parquet(targets_path)
+    second_input = tmp_path / "second.json"
+    write_input(
+        second_input,
+        signal_date=ELIGIBLE_DATE,
+        eligible_date=NEXT_ELIGIBLE_DATE,
+        previous_signal_build_id=first.build_id,
+    )
+
+    with pytest.raises(ValueError, match="signal output changed after build"):
+        service.build(second_input)
+
+
+def test_trend_chain_emits_zero_target_when_a_held_product_leaves_universe(
+    tmp_path: Path,
+) -> None:
+    curated = tmp_path / "curated"
+    write_source_build(curated, next_eligible=False)
+    service = FuturesTrendService(curated, tmp_path / "reports")
+    first_input = tmp_path / "first.json"
+    write_input(first_input)
+    first = service.build(first_input)
+    second_input = tmp_path / "second.json"
+    write_input(
+        second_input,
+        signal_date=ELIGIBLE_DATE,
+        eligible_date=NEXT_ELIGIBLE_DATE,
+        previous_signal_build_id=first.build_id,
+    )
+
+    second = service.build(second_input)
+
+    target = pl.read_parquet(second.output_dir / "targets.parquet").row(0, named=True)
+    assert target["product_code"] == "CU"
+    assert target["contract_code"] == CONTRACT
+    assert target["unconstrained_signed_lots"] == 0
+    assert target["target_signed_lots"] == 0
+    assert target["status"] == "universe_exit"

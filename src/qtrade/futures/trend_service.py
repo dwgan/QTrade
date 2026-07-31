@@ -27,6 +27,7 @@ class FuturesTrendBuildResult:
     total_daily_risk: float
     initial_margin: float
     stress_margin: float
+    buffered_rows: int
     reused: bool = False
 
 
@@ -45,6 +46,9 @@ class FuturesTrendService:
         "one_lot_daily_risk": pl.Float64,
         "one_lot_initial_margin": pl.Float64,
         "unconstrained_signed_lots": pl.Int64,
+        "buffered_signed_lots": pl.Int64,
+        "buffer_applied": pl.Boolean,
+        "buffer_reason": pl.String,
         "target_signed_lots": pl.Int64,
         "initial_margin": pl.Float64,
         "stress_margin": pl.Float64,
@@ -73,6 +77,7 @@ class FuturesTrendService:
         signal_date = self._date(payload.get("signal_date"), "signal_date")
         eligible_date = self._date(payload.get("eligible_date"), "eligible_date")
         equity = self._positive(payload.get("equity"), "equity")
+        previous_signal_build_id = str(payload.get("previous_signal_build_id") or "").strip()
 
         research_dir = self.curated_root / "futures" / "research" / f"build_id={research_build_id}"
         manifest_path = research_dir / "manifest.json"
@@ -107,6 +112,11 @@ class FuturesTrendService:
         self._verify_declared_input(source_manifest, contract_path)
         if not settlement_path.is_file():
             raise FileNotFoundError(f"Futures settlement partition not found: {settlement_path}")
+        previous_targets, previous_rows, previous_versions = self._previous_targets(
+            previous_signal_build_id,
+            research_build_id,
+            signal_date,
+        )
 
         versions = [
             self._file_version(input_path, input_path.parent),
@@ -114,10 +124,12 @@ class FuturesTrendService:
             self._file_version(daily_path, self.curated_root),
             self._file_version(contract_path, self.curated_root),
             self._file_version(settlement_path, self.curated_root),
+            *previous_versions,
         ]
         build_payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "research_build_id": research_build_id,
+            "previous_signal_build_id": previous_signal_build_id or None,
             "protocol_id": self.protocol.protocol_id,
             "protocol": asdict(self.protocol),
             "sector_registry_id": futures_sector_registry_id(),
@@ -134,6 +146,7 @@ class FuturesTrendService:
             if not output_manifest.is_file() or not (output_dir / self.OUTPUT_FILE).is_file():
                 raise RuntimeError(f"Incomplete immutable futures trend build exists: {output_dir}")
             manifest = json.loads(output_manifest.read_text(encoding="utf-8"))
+            self._verify_signal_output(manifest, output_dir / self.OUTPUT_FILE)
             return self._result(manifest, output_dir, output_manifest, report_path, reused=True)
 
         continuous = pl.read_parquet(continuous_path)
@@ -155,6 +168,7 @@ class FuturesTrendService:
             universe,
             roll_schedule,
             contracts,
+            previous_targets=previous_targets,
         )
         target_rows = [
             {
@@ -166,9 +180,21 @@ class FuturesTrendService:
             }
             for target in result.targets
         ]
+        target_rows.extend(
+            self._universe_exit_rows(
+                previous_rows,
+                {row["product_code"] for row in target_rows},
+                signal_date,
+                eligible_date,
+                research_build_id,
+                result.protocol_id,
+            )
+        )
+        target_rows.sort(key=lambda row: row["product_code"])
         insufficient_capital_rows = sum(
             row["status"] == "insufficient_capital" for row in target_rows
         )
+        buffered_rows = sum(bool(row["buffer_applied"]) for row in target_rows)
         manifest = {
             **build_payload,
             "build_id": build_id,
@@ -176,6 +202,7 @@ class FuturesTrendService:
             "outputs": {"targets": self.OUTPUT_FILE},
             "rows": {"targets": len(target_rows)},
             "insufficient_capital_rows": insufficient_capital_rows,
+            "buffered_rows": buffered_rows,
             "portfolio_daily_risk_budget": result.portfolio_daily_risk_budget,
             "total_daily_risk": result.total_daily_risk,
             "sector_daily_risk": result.sector_daily_risk,
@@ -185,6 +212,78 @@ class FuturesTrendService:
         self._write_immutable(output_dir, target_rows, manifest)
         self._write_report(report_path, manifest)
         return self._result(manifest, output_dir, output_manifest, report_path, reused=False)
+
+    def _previous_targets(
+        self,
+        build_id: str,
+        research_build_id: str,
+        signal_date: date,
+    ) -> tuple[dict[str, int], list[dict[str, Any]], list[dict[str, Any]]]:
+        if not build_id:
+            return {}, [], []
+        directory = self.curated_root / "futures" / "signals" / f"build_id={build_id}"
+        manifest_path = directory / "manifest.json"
+        targets_path = directory / self.OUTPUT_FILE
+        for path in (manifest_path, targets_path):
+            if not path.is_file():
+                raise FileNotFoundError(f"Previous futures signal build input not found: {path}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("build_id") != build_id or not manifest.get("passed"):
+            raise ValueError("Previous futures signal build is invalid or failed quality checks.")
+        if manifest.get("protocol_id") != self.protocol.protocol_id:
+            raise ValueError("Previous futures signal build uses a different frozen protocol.")
+        if manifest.get("research_build_id") != research_build_id:
+            raise ValueError("Previous futures signal build uses a different research build.")
+        if self._date(manifest.get("eligible_date"), "previous eligible_date") != signal_date:
+            raise ValueError("Previous signal eligible date must equal the current signal date.")
+        self._verify_signal_output(manifest, targets_path)
+        frame = pl.read_parquet(targets_path)
+        if frame.select("product_code").is_duplicated().any():
+            raise ValueError("Previous futures signal targets must have unique product codes.")
+        rows = frame.to_dicts()
+        targets = {str(row["product_code"]): int(row["target_signed_lots"]) for row in rows}
+        versions = [
+            self._file_version(manifest_path, self.curated_root),
+            self._file_version(targets_path, self.curated_root),
+        ]
+        return targets, rows, versions
+
+    @staticmethod
+    def _universe_exit_rows(
+        previous_rows: list[dict[str, Any]],
+        current_products: set[str],
+        signal_date: date,
+        eligible_date: date,
+        research_build_id: str,
+        protocol_id: str,
+    ) -> list[dict[str, Any]]:
+        rows = []
+        for previous in previous_rows:
+            product_code = str(previous["product_code"])
+            if product_code in current_products or int(previous["target_signed_lots"]) == 0:
+                continue
+            rows.append(
+                {
+                    **previous,
+                    "signal_date": signal_date.isoformat(),
+                    "eligible_date": eligible_date.isoformat(),
+                    "signal_strength": 0.0,
+                    "product_daily_risk_budget": 0.0,
+                    "allocated_daily_risk": 0.0,
+                    "unconstrained_signed_lots": 0,
+                    "buffered_signed_lots": 0,
+                    "buffer_applied": False,
+                    "buffer_reason": None,
+                    "target_signed_lots": 0,
+                    "initial_margin": 0.0,
+                    "stress_margin": 0.0,
+                    "limit_reasons": [],
+                    "status": "universe_exit",
+                    "protocol_id": protocol_id,
+                    "research_build_id": research_build_id,
+                }
+            )
+        return rows
 
     def _contract_inputs(
         self,
@@ -295,6 +394,17 @@ class FuturesTrendService:
             raise ValueError(f"Futures research output changed after build: {path.name}")
 
     @staticmethod
+    def _verify_signal_output(manifest: dict[str, Any], path: Path) -> None:
+        matches = [
+            item for item in manifest.get("output_versions", []) if item.get("path") == path.name
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"Signal manifest does not declare output hash: {path.name}")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if matches[0].get("sha256") != digest or matches[0].get("size") != path.stat().st_size:
+            raise ValueError(f"Futures signal output changed after build: {path.name}")
+
+    @staticmethod
     def _file_version(path: Path, base: Path) -> dict[str, Any]:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         return {
@@ -347,6 +457,14 @@ class FuturesTrendService:
                 else pl.DataFrame(schema=self.TARGET_SCHEMA)
             )
             frame.write_parquet(temporary / self.OUTPUT_FILE, compression="zstd")
+            target_path = temporary / self.OUTPUT_FILE
+            manifest["output_versions"] = [
+                {
+                    "path": self.OUTPUT_FILE,
+                    "sha256": hashlib.sha256(target_path.read_bytes()).hexdigest(),
+                    "size": target_path.stat().st_size,
+                }
+            ]
             self._atomic_json(temporary / "manifest.json", manifest)
             os.replace(temporary, output_dir)
         except Exception:
@@ -365,6 +483,7 @@ class FuturesTrendService:
                 f"- Eligible date: {manifest['eligible_date']}",
                 f"- Target rows: {manifest['rows']['targets']}",
                 f"- Insufficient capital rows: {manifest['insufficient_capital_rows']}",
+                f"- Buffered rows: {manifest['buffered_rows']}",
                 f"- Total daily risk: {manifest['total_daily_risk']:.2f}",
                 f"- Initial margin: {manifest['initial_margin']:.2f}",
                 f"- Stress margin: {manifest['stress_margin']:.2f}",
@@ -401,5 +520,6 @@ class FuturesTrendService:
             total_daily_risk=manifest["total_daily_risk"],
             initial_margin=manifest["initial_margin"],
             stress_margin=manifest["stress_margin"],
+            buffered_rows=manifest["buffered_rows"],
             reused=reused,
         )
