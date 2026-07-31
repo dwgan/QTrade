@@ -4,11 +4,17 @@ import hashlib
 import json
 import math
 import statistics
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date
 from typing import Any
 
 import polars as pl
+
+from qtrade.futures.trend_risk import (
+    FuturesPortfolioRiskAllocator,
+    FuturesPortfolioRiskCandidate,
+    FuturesPortfolioRiskLimits,
+)
 
 
 @dataclass(frozen=True)
@@ -19,6 +25,10 @@ class FuturesTrendProtocol:
     annualization_days: int = 252
     portfolio_target_annual_volatility: float = 0.08
     product_risk_budget_fraction: float = 0.10
+    sector_risk_budget_fraction: float = 0.30
+    initial_margin_fraction: float = 0.25
+    stress_margin_fraction: float = 0.50
+    stress_margin_multiplier: float = 1.50
 
     def __post_init__(self) -> None:
         if not self.lookbacks or len(self.lookbacks) != len(self.weights):
@@ -35,6 +45,11 @@ class FuturesTrendProtocol:
             raise ValueError("Annualization days must be positive.")
         self._fraction("portfolio_target_annual_volatility")
         self._fraction("product_risk_budget_fraction")
+        self._fraction("sector_risk_budget_fraction")
+        self._fraction("initial_margin_fraction")
+        self._fraction("stress_margin_fraction")
+        if not math.isfinite(self.stress_margin_multiplier) or self.stress_margin_multiplier < 1:
+            raise ValueError("stress_margin_multiplier must be finite and at least one.")
 
     @property
     def protocol_id(self) -> str:
@@ -53,12 +68,18 @@ class FuturesTrendTarget:
     eligible_date: date
     product_code: str
     contract_code: str
+    sector: str
     signal_strength: float
     estimated_daily_volatility: float
     product_daily_risk_budget: float
     allocated_daily_risk: float
     one_lot_daily_risk: float
+    one_lot_initial_margin: float
+    unconstrained_signed_lots: int
     target_signed_lots: int
+    initial_margin: float
+    stress_margin: float
+    limit_reasons: tuple[str, ...]
     status: str
 
 
@@ -68,6 +89,11 @@ class FuturesTrendResult:
     signal_date: date
     eligible_date: date
     targets: tuple[FuturesTrendTarget, ...]
+    portfolio_daily_risk_budget: float
+    total_daily_risk: float
+    sector_daily_risk: dict[str, float]
+    initial_margin: float
+    stress_margin: float
 
 
 class FuturesTrendEngine:
@@ -86,7 +112,7 @@ class FuturesTrendEngine:
     ) -> FuturesTrendResult:
         if signal_date >= eligible_date:
             raise ValueError("Trend targets require an eligible date after the signal date.")
-        self._positive(equity, "equity")
+        equity = self._positive(equity, "equity")
         continuous_rows = self._rows(continuous, "continuous")
         universe_rows = self._rows(universe, "universe")
         roll_rows = self._rows(roll_schedule, "roll_schedule")
@@ -97,12 +123,22 @@ class FuturesTrendEngine:
                 if self._date(row["trade_date"]) == signal_date and bool(row["eligible"])
             }
         )
+        portfolio_daily_risk_budget = (
+            equity
+            * self.protocol.portfolio_target_annual_volatility
+            / math.sqrt(self.protocol.annualization_days)
+        )
         if not eligible_products:
             return FuturesTrendResult(
                 protocol_id=self.protocol.protocol_id,
                 signal_date=signal_date,
                 eligible_date=eligible_date,
                 targets=(),
+                portfolio_daily_risk_budget=portfolio_daily_risk_budget,
+                total_daily_risk=0.0,
+                sector_daily_risk={},
+                initial_margin=0.0,
+                stress_margin=0.0,
             )
         contract_rows = self._rows(contracts, "contracts")
         product_daily_risk_budget = (
@@ -111,7 +147,7 @@ class FuturesTrendEngine:
             / math.sqrt(self.protocol.annualization_days)
             * self.protocol.product_risk_budget_fraction
         )
-        targets = tuple(
+        unconstrained_targets = tuple(
             self._target(
                 product_code,
                 signal_date,
@@ -123,11 +159,34 @@ class FuturesTrendEngine:
             )
             for product_code in eligible_products
         )
+        risk_result = FuturesPortfolioRiskAllocator(self._risk_limits()).allocate(
+            equity,
+            [
+                FuturesPortfolioRiskCandidate(
+                    product_code=target.product_code,
+                    sector=target.sector,
+                    signed_lots=target.unconstrained_signed_lots,
+                    one_lot_daily_risk=target.one_lot_daily_risk,
+                    one_lot_initial_margin=target.one_lot_initial_margin,
+                )
+                for target in unconstrained_targets
+            ],
+        )
+        allocations = {item.product_code: item for item in risk_result.allocations}
+        targets = tuple(
+            self._apply_allocation(target, allocations[target.product_code])
+            for target in unconstrained_targets
+        )
         return FuturesTrendResult(
             protocol_id=self.protocol.protocol_id,
             signal_date=signal_date,
             eligible_date=eligible_date,
             targets=targets,
+            portfolio_daily_risk_budget=risk_result.portfolio_daily_risk_budget,
+            total_daily_risk=risk_result.total_daily_risk,
+            sector_daily_risk=risk_result.sector_daily_risk,
+            initial_margin=risk_result.initial_margin,
+            stress_margin=risk_result.stress_margin,
         )
 
     def _target(
@@ -159,6 +218,15 @@ class FuturesTrendEngine:
         spec = self._one(specs, f"contract specification for {contract_code}")
         settlement = self._positive(spec["settle"], f"settlement for {contract_code}")
         multiplier = self._positive(spec["multiplier"], f"multiplier for {contract_code}")
+        sector = str(spec["sector"]).strip()
+        if not sector:
+            raise ValueError(f"sector for {contract_code} must not be empty.")
+        long_margin_rate = self._margin_rate(
+            spec["long_margin_rate"], f"long margin rate for {contract_code}"
+        )
+        short_margin_rate = self._margin_rate(
+            spec["short_margin_rate"], f"short margin rate for {contract_code}"
+        )
         history = sorted(
             (
                 self._date(row["trade_date"]),
@@ -205,17 +273,57 @@ class FuturesTrendEngine:
         else:
             status = "targeted"
             signed_lots = lots * self._sign(signal_strength)
+        margin_rate = (
+            long_margin_rate
+            if signal_strength > 0
+            else short_margin_rate
+            if signal_strength < 0
+            else max(long_margin_rate, short_margin_rate)
+        )
+        one_lot_initial_margin = settlement * multiplier * margin_rate
         return FuturesTrendTarget(
             signal_date=signal_date,
             eligible_date=eligible_date,
             product_code=product_code,
             contract_code=contract_code,
+            sector=sector,
             signal_strength=signal_strength,
             estimated_daily_volatility=volatility,
             product_daily_risk_budget=product_daily_risk_budget,
             allocated_daily_risk=allocated_daily_risk,
             one_lot_daily_risk=one_lot_daily_risk,
+            one_lot_initial_margin=one_lot_initial_margin,
+            unconstrained_signed_lots=signed_lots,
             target_signed_lots=signed_lots,
+            initial_margin=abs(signed_lots) * one_lot_initial_margin,
+            stress_margin=(
+                abs(signed_lots) * one_lot_initial_margin * self.protocol.stress_margin_multiplier
+            ),
+            limit_reasons=(),
+            status=status,
+        )
+
+    def _risk_limits(self) -> FuturesPortfolioRiskLimits:
+        return FuturesPortfolioRiskLimits(
+            annualization_days=self.protocol.annualization_days,
+            portfolio_target_annual_volatility=self.protocol.portfolio_target_annual_volatility,
+            sector_risk_budget_fraction=self.protocol.sector_risk_budget_fraction,
+            initial_margin_fraction=self.protocol.initial_margin_fraction,
+            stress_margin_fraction=self.protocol.stress_margin_fraction,
+            stress_margin_multiplier=self.protocol.stress_margin_multiplier,
+        )
+
+    @staticmethod
+    def _apply_allocation(target: FuturesTrendTarget, allocation: Any) -> FuturesTrendTarget:
+        status = target.status
+        if target.status == "targeted" and allocation.signed_lots != target.target_signed_lots:
+            status = "risk_limited" if allocation.signed_lots else "risk_limited_to_zero"
+        return replace(
+            target,
+            target_signed_lots=allocation.signed_lots,
+            initial_margin=allocation.initial_margin,
+            stress_margin=allocation.stress_margin,
+            limit_reasons=allocation.limit_reasons,
             status=status,
         )
 
@@ -242,6 +350,13 @@ class FuturesTrendEngine:
         number = float(value)
         if not math.isfinite(number) or number <= 0:
             raise ValueError(f"{name} must be finite and positive.")
+        return number
+
+    @staticmethod
+    def _margin_rate(value: Any, name: str) -> float:
+        number = float(value)
+        if not math.isfinite(number) or not 0 < number < 1:
+            raise ValueError(f"{name} must be finite and in (0, 1).")
         return number
 
     @staticmethod

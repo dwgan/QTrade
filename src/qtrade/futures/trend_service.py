@@ -12,6 +12,7 @@ from typing import Any
 
 import polars as pl
 
+from qtrade.futures.sectors import futures_sector, futures_sector_registry_id
 from qtrade.futures.trend import FuturesTrendEngine, FuturesTrendProtocol
 
 
@@ -23,6 +24,9 @@ class FuturesTrendBuildResult:
     report_path: Path
     target_rows: int
     insufficient_capital_rows: int
+    total_daily_risk: float
+    initial_margin: float
+    stress_margin: float
     reused: bool = False
 
 
@@ -33,12 +37,18 @@ class FuturesTrendService:
         "eligible_date": pl.String,
         "product_code": pl.String,
         "contract_code": pl.String,
+        "sector": pl.String,
         "signal_strength": pl.Float64,
         "estimated_daily_volatility": pl.Float64,
         "product_daily_risk_budget": pl.Float64,
         "allocated_daily_risk": pl.Float64,
         "one_lot_daily_risk": pl.Float64,
+        "one_lot_initial_margin": pl.Float64,
+        "unconstrained_signed_lots": pl.Int64,
         "target_signed_lots": pl.Int64,
+        "initial_margin": pl.Float64,
+        "stress_margin": pl.Float64,
+        "limit_reasons": pl.List(pl.String),
         "status": pl.String,
         "protocol_id": pl.String,
         "research_build_id": pl.String,
@@ -92,20 +102,25 @@ class FuturesTrendService:
             raise ValueError("Futures research manifest requires provider.")
         daily_path = self._partition_path("futures_daily", provider, signal_date)
         contract_path = self._partition_path("futures_contracts", provider, contract_partition)
+        settlement_path = self._partition_path("futures_settlements", provider, signal_date)
         self._verify_declared_input(source_manifest, daily_path)
         self._verify_declared_input(source_manifest, contract_path)
+        if not settlement_path.is_file():
+            raise FileNotFoundError(f"Futures settlement partition not found: {settlement_path}")
 
         versions = [
             self._file_version(input_path, input_path.parent),
             *(self._file_version(path, self.curated_root) for path in research_paths),
             self._file_version(daily_path, self.curated_root),
             self._file_version(contract_path, self.curated_root),
+            self._file_version(settlement_path, self.curated_root),
         ]
         build_payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "research_build_id": research_build_id,
             "protocol_id": self.protocol.protocol_id,
             "protocol": asdict(self.protocol),
+            "sector_registry_id": futures_sector_registry_id(),
             "signal_date": signal_date.isoformat(),
             "eligible_date": eligible_date.isoformat(),
             "equity": equity,
@@ -130,6 +145,7 @@ class FuturesTrendService:
             roll_schedule,
             pl.read_parquet(daily_path),
             pl.read_parquet(contract_path),
+            pl.read_parquet(settlement_path),
         )
         result = FuturesTrendEngine(self.protocol).generate(
             signal_date,
@@ -160,6 +176,11 @@ class FuturesTrendService:
             "outputs": {"targets": self.OUTPUT_FILE},
             "rows": {"targets": len(target_rows)},
             "insufficient_capital_rows": insufficient_capital_rows,
+            "portfolio_daily_risk_budget": result.portfolio_daily_risk_budget,
+            "total_daily_risk": result.total_daily_risk,
+            "sector_daily_risk": result.sector_daily_risk,
+            "initial_margin": result.initial_margin,
+            "stress_margin": result.stress_margin,
         }
         self._write_immutable(output_dir, target_rows, manifest)
         self._write_report(report_path, manifest)
@@ -172,24 +193,36 @@ class FuturesTrendService:
         roll_schedule: pl.DataFrame,
         daily: pl.DataFrame,
         contract_master: pl.DataFrame,
+        settlements: pl.DataFrame,
     ) -> pl.DataFrame:
-        selected = {
-            str(row["selected_contract"])
+        selected_products = {
+            str(row["selected_contract"]): str(row["product_code"])
             for row in roll_schedule.to_dicts()
             if self._date(row["decision_date"], "decision_date") == signal_date
             and self._date(row["effective_date"], "effective_date") == eligible_date
             and bool(row["universe_eligible"])
         }
+        selected = set(selected_products)
         daily_rows = self._unique_by_code(daily, selected, "daily")
         contract_rows = self._unique_by_code(contract_master, selected, "contract master")
+        settlement_rows = self._unique_by_code(settlements, selected, "settlement")
         records = []
         for contract_code in sorted(selected):
+            daily_date = self._compact_date(daily_rows[contract_code].get("trade_date"))
+            settlement_date = self._compact_date(settlement_rows[contract_code].get("trade_date"))
+            if daily_date != signal_date or settlement_date != signal_date:
+                raise ValueError(
+                    f"Contract inputs for {contract_code} must be observed on signal date."
+                )
             records.append(
                 {
                     "trade_date": signal_date.isoformat(),
                     "contract_code": contract_code,
                     "settle": daily_rows[contract_code].get("settle"),
                     "multiplier": contract_rows[contract_code].get("multiplier"),
+                    "sector": futures_sector(selected_products[contract_code]),
+                    "long_margin_rate": settlement_rows[contract_code].get("long_margin_rate"),
+                    "short_margin_rate": settlement_rows[contract_code].get("short_margin_rate"),
                 }
             )
         if not records:
@@ -199,6 +232,9 @@ class FuturesTrendService:
                     "contract_code": pl.String,
                     "settle": pl.Float64,
                     "multiplier": pl.Float64,
+                    "sector": pl.String,
+                    "long_margin_rate": pl.Float64,
+                    "short_margin_rate": pl.Float64,
                 }
             )
         return pl.DataFrame(records, infer_schema_length=None, strict=False)
@@ -279,6 +315,13 @@ class FuturesTrendService:
             raise ValueError(f"{name} must be an ISO date.") from error
 
     @staticmethod
+    def _compact_date(value: Any) -> date | None:
+        text = str(value or "").strip().replace("-", "")
+        if len(text) != 8 or not text.isdigit():
+            return None
+        return date(int(text[:4]), int(text[4:6]), int(text[6:]))
+
+    @staticmethod
     def _positive(value: Any, name: str) -> float:
         try:
             number = float(value)
@@ -322,6 +365,9 @@ class FuturesTrendService:
                 f"- Eligible date: {manifest['eligible_date']}",
                 f"- Target rows: {manifest['rows']['targets']}",
                 f"- Insufficient capital rows: {manifest['insufficient_capital_rows']}",
+                f"- Total daily risk: {manifest['total_daily_risk']:.2f}",
+                f"- Initial margin: {manifest['initial_margin']:.2f}",
+                f"- Stress margin: {manifest['stress_margin']:.2f}",
                 "",
             ]
         )
@@ -352,5 +398,8 @@ class FuturesTrendService:
             report_path=report_path,
             target_rows=manifest["rows"]["targets"],
             insufficient_capital_rows=manifest["insufficient_capital_rows"],
+            total_daily_risk=manifest["total_daily_risk"],
+            initial_margin=manifest["initial_margin"],
+            stress_margin=manifest["stress_margin"],
             reused=reused,
         )

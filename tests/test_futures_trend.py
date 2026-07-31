@@ -44,6 +44,9 @@ def market_inputs() -> tuple[date, date, pl.DataFrame, pl.DataFrame, pl.DataFram
             "contract_code": ["CU2607.SHF"],
             "settle": [800.0],
             "multiplier": [5.0],
+            "sector": ["base_metals"],
+            "long_margin_rate": [0.10],
+            "short_margin_rate": [0.12],
         }
     )
     return signal_date, eligible_date, continuous, universe, roll_schedule, contracts
@@ -65,13 +68,19 @@ def test_trend_target_uses_frozen_t_plus_one_contract_and_whole_lots() -> None:
 
     target = result.targets[0]
     assert target.contract_code == "CU2607.SHF"
+    assert target.sector == "base_metals"
     assert target.signal_strength == 1.0
     assert target.status == "targeted"
     assert target.target_signed_lots > 0
+    assert target.unconstrained_signed_lots >= target.target_signed_lots
+    assert target.limit_reasons == ()
     assert target.target_signed_lots == math.floor(
         target.allocated_daily_risk / target.one_lot_daily_risk
     )
     assert target.eligible_date == eligible_date
+    assert result.initial_margin <= 10_000_000 * 0.25
+    assert result.stress_margin <= 10_000_000 * 0.50
+    assert result.total_daily_risk > 0
 
 
 def test_future_continuous_price_cannot_change_signal_date_target() -> None:
@@ -123,3 +132,23 @@ def test_one_lot_above_risk_budget_reports_insufficient_capital() -> None:
     assert target.status == "insufficient_capital"
     assert target.target_signed_lots == 0
     assert target.one_lot_daily_risk > target.allocated_daily_risk
+
+
+def test_short_target_uses_short_margin_rate() -> None:
+    signal_date, eligible_date, continuous, universe, roll_schedule, contracts = market_inputs()
+    falling = continuous.with_columns((1 / pl.col("continuous_index")).alias("continuous_index"))
+
+    result = FuturesTrendEngine(FuturesTrendProtocol()).generate(
+        signal_date,
+        eligible_date,
+        10_000_000,
+        falling,
+        universe,
+        roll_schedule,
+        contracts,
+    )
+
+    target = result.targets[0]
+    assert target.signal_strength == -1.0
+    assert target.target_signed_lots < 0
+    assert target.one_lot_initial_margin == 800.0 * 5.0 * 0.12

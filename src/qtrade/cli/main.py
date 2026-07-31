@@ -627,6 +627,11 @@ def run(args: argparse.Namespace) -> int:
                     f"Targets: {result.target_rows}; "
                     f"insufficient capital: {result.insufficient_capital_rows}"
                 )
+                print(
+                    f"Daily risk: {result.total_daily_risk:.2f}; "
+                    f"initial margin: {result.initial_margin:.2f}; "
+                    f"stress margin: {result.stress_margin:.2f}"
+                )
                 print(f"Manifest: {result.manifest_path}")
                 print(f"Report: {result.report_path}")
                 return 0

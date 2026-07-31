@@ -41,10 +41,33 @@ def write_source_build(curated: Path, *, eligible: bool = True) -> None:
         / f"as_of_date={SIGNAL_DATE.isoformat()}"
         / "data.parquet"
     )
+    settlement_path = (
+        curated
+        / "futures"
+        / "futures_settlements"
+        / "provider=tushare"
+        / f"as_of_date={SIGNAL_DATE.isoformat()}"
+        / "data.parquet"
+    )
     daily_path.parent.mkdir(parents=True)
     contract_path.parent.mkdir(parents=True)
-    pl.DataFrame({"ts_code": [CONTRACT], "settle": [800.0]}).write_parquet(daily_path)
+    settlement_path.parent.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "ts_code": [CONTRACT],
+            "trade_date": [SIGNAL_DATE.strftime("%Y%m%d")],
+            "settle": [800.0],
+        }
+    ).write_parquet(daily_path)
     pl.DataFrame({"ts_code": [CONTRACT], "multiplier": [5.0]}).write_parquet(contract_path)
+    pl.DataFrame(
+        {
+            "ts_code": [CONTRACT],
+            "trade_date": [SIGNAL_DATE.strftime("%Y%m%d")],
+            "long_margin_rate": [0.10],
+            "short_margin_rate": [0.12],
+        }
+    ).write_parquet(settlement_path)
 
     research = curated / "futures" / "research" / f"build_id={RESEARCH_BUILD_ID}"
     research.mkdir(parents=True)
@@ -121,10 +144,14 @@ def test_trend_snapshot_is_content_addressed_and_reused(tmp_path: Path) -> None:
     assert first.target_rows == 1
     target = pl.read_parquet(first.output_dir / "targets.parquet").row(0, named=True)
     assert target["contract_code"] == CONTRACT
+    assert target["sector"] == "base_metals"
     assert target["target_signed_lots"] > 0
     manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
     assert manifest["research_build_id"] == RESEARCH_BUILD_ID
     assert manifest["protocol_id"]
+    assert manifest["sector_registry_id"]
+    assert manifest["initial_margin"] <= manifest["equity"] * 0.25
+    assert manifest["stress_margin"] <= manifest["equity"] * 0.50
     assert first.report_path.is_file()
 
 
@@ -172,6 +199,27 @@ def test_trend_snapshot_rejects_a_changed_research_output(tmp_path: Path) -> Non
     write_input(input_path)
 
     with pytest.raises(ValueError, match="research output changed after build"):
+        FuturesTrendService(curated, tmp_path / "reports").build(input_path)
+
+    assert not (curated / "futures" / "signals").exists()
+
+
+def test_trend_snapshot_rejects_missing_signal_date_margin_rates(tmp_path: Path) -> None:
+    curated = tmp_path / "curated"
+    write_source_build(curated)
+    settlement_path = (
+        curated
+        / "futures"
+        / "futures_settlements"
+        / "provider=tushare"
+        / f"as_of_date={SIGNAL_DATE.isoformat()}"
+        / "data.parquet"
+    )
+    settlement_path.unlink()
+    input_path = tmp_path / "trend.json"
+    write_input(input_path)
+
+    with pytest.raises(FileNotFoundError, match="settlement partition"):
         FuturesTrendService(curated, tmp_path / "reports").build(input_path)
 
     assert not (curated / "futures" / "signals").exists()
