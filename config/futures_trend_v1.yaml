@@ -1,0 +1,113 @@
+protocol_id: futures_trend_v1
+version: 1
+parent_protocol_id: null
+title: 中国期货多周期波动率目标趋势策略 v1
+hypothesis: 多品种期货的20/60/120日时间序列趋势在保守执行成本和风险约束后仍具有可解释的正向长期期望。
+status: frozen
+created_at: '2026-08-01T00:00:00+00:00'
+frozen_at: '2026-08-01T00:00:00+00:00'
+partitions:
+- name: development
+  start_date: '2015-01-01'
+  end_date: '2020-12-31'
+- name: validation
+  start_date: '2021-01-01'
+  end_date: '2022-12-31'
+- name: holdout
+  start_date: '2023-01-01'
+  end_date: '2024-12-31'
+- name: forward
+  start_date: '2026-08-03'
+  end_date: null
+strategy:
+  signal: weighted_sign_of_returns
+  lookbacks: [20, 60, 120]
+  weights: [0.3333333333333333, 0.3333333333333333, 0.3333333333333333]
+  volatility_lookback: 40
+  annualization_days: 252
+  portfolio_target_annual_volatility: 0.08
+  product_risk_budget_fraction: 0.10
+  sector_risk_budget_fraction: 0.30
+  initial_margin_fraction: 0.25
+  stress_margin_fraction: 0.50
+  stress_margin_multiplier: 1.50
+  position_buffer_fraction: 0.10
+  position_buffer_minimum_lots: 1
+  whole_lots_only: true
+  continuous_prices_for_signals_only: true
+execution:
+  signal_time: T_close_after_settlement
+  baseline_eligible_time: T_plus_1
+  actual_contracts_only: true
+  slippage_ticks: 1
+  roll_confirmation_days: 2
+  scenarios:
+  - name: baseline
+    execution_delay_days: 0
+    cost_multiplier: 1.0
+    margin_multiplier: 1.0
+    roll_confirmation_days_delta: 0
+    lookback_multiplier: 1.0
+    volatility_lookback: 40
+  - name: delayed_execution_1d
+    execution_delay_days: 1
+    cost_multiplier: 1.0
+    margin_multiplier: 1.0
+    roll_confirmation_days_delta: 0
+    lookback_multiplier: 1.0
+    volatility_lookback: 40
+  - name: double_cost
+    execution_delay_days: 0
+    cost_multiplier: 2.0
+    margin_multiplier: 1.0
+    roll_confirmation_days_delta: 0
+    lookback_multiplier: 1.0
+    volatility_lookback: 40
+  - name: margin_up_50pct
+    execution_delay_days: 0
+    cost_multiplier: 1.0
+    margin_multiplier: 1.5
+    roll_confirmation_days_delta: 0
+    lookback_multiplier: 1.0
+    volatility_lookback: 40
+  - name: slower_roll
+    execution_delay_days: 0
+    cost_multiplier: 1.0
+    margin_multiplier: 1.0
+    roll_confirmation_days_delta: 1
+    lookback_multiplier: 1.0
+    volatility_lookback: 40
+  - name: faster_trend
+    execution_delay_days: 0
+    cost_multiplier: 1.0
+    margin_multiplier: 1.0
+    roll_confirmation_days_delta: 0
+    lookback_multiplier: 0.9
+    volatility_lookback: 30
+  - name: slower_trend
+    execution_delay_days: 0
+    cost_multiplier: 1.0
+    margin_multiplier: 1.0
+    roll_confirmation_days_delta: 0
+    lookback_multiplier: 1.1
+    volatility_lookback: 50
+acceptance_criteria:
+  temporal_leakage_issues: 0
+  data_gate_errors: 0
+  validation_trials_max: 1
+  development_annualized_return_min: 0.0
+  validation_annualized_return_min: 0.0
+  holdout_annualized_return_min: 0.0
+  maximum_drawdown_max: 0.30
+  double_cost_annualized_return_min: 0.0
+  delayed_execution_annualized_return_min: 0.0
+  slower_roll_annualized_return_min: 0.0
+  margin_up_50pct_annualized_return_min: 0.0
+  margin_stress_insolvency_days_max: 0
+  positive_parameter_neighbors_min: 2
+allowed_trials: 1
+code_commit: 17a5e12
+config_hash: 5e8bc622c86e0742cc44
+data_version: unfrozen
+partition_data_versions: {}
+content_hash: 155f19b5de298c1ac61c46f84b7dc3ca33106634c004883faaa79a6a81b43b01

@@ -16,13 +16,16 @@ from qtrade.data.validation import DataValidator
 from qtrade.domain import Dataset
 from qtrade.factors.service import FactorAnalysisService
 from qtrade.futures.audit import FuturesDataAuditService
+from qtrade.futures.backtest_input import FuturesBacktestInputCompiler
 from qtrade.futures.backtest_service import FuturesBacktestService
 from qtrade.futures.domain import FuturesDataset
 from qtrade.futures.research import FuturesResearchService
 from qtrade.futures.service import FuturesDataService
 from qtrade.futures.storage import FuturesParquetStore
+from qtrade.futures.strategy_validation import FuturesStrategyValidationService
 from qtrade.futures.trend_service import FuturesTrendService
 from qtrade.futures.validation import FuturesDataValidator
+from qtrade.futures.validation_readiness import FuturesValidationReadinessService
 from qtrade.industry.service import IndustryAnalysisService
 from qtrade.market.service import MarketAnalysisService
 from qtrade.observation.service import ObservationService
@@ -247,6 +250,29 @@ def build_futures_trend_service(config: AppConfig) -> FuturesTrendService:
     )
 
 
+def build_futures_backtest_input_compiler(config: AppConfig) -> FuturesBacktestInputCompiler:
+    config.paths.create()
+    return FuturesBacktestInputCompiler(config.paths.curated, config.paths.reports)
+
+
+def build_futures_validation_service(config: AppConfig) -> FuturesStrategyValidationService:
+    config.paths.create()
+    return FuturesStrategyValidationService(
+        config.futures,
+        config.paths.curated,
+        config.paths.reports,
+        config.paths.runtime,
+        Path.cwd(),
+    )
+
+
+def build_futures_validation_readiness_service(
+    config: AppConfig,
+) -> FuturesValidationReadinessService:
+    config.paths.create()
+    return FuturesValidationReadinessService(config.paths.curated, config.paths.reports)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qtrade", description="QTrade research toolkit")
     parser.add_argument("--config", default="config/base.yaml", help="YAML configuration path")
@@ -375,6 +401,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build an immutable point-in-time futures trend target snapshot",
     )
     futures_trend.add_argument("--input", required=True, type=Path)
+    futures_compile = futures_commands.add_parser(
+        "compile-backtest",
+        help="Compile a verified futures signal chain into immutable backtest input",
+    )
+    futures_compile.add_argument("--input", required=True, type=Path)
+    futures_validate = futures_commands.add_parser(
+        "validate-strategy",
+        help="Run the frozen futures robustness validation suite",
+    )
+    futures_validate.add_argument("--input", required=True, type=Path)
+    futures_readiness = futures_commands.add_parser(
+        "validation-readiness",
+        help="Audit frozen futures protocol data and signal coverage",
+    )
+    futures_readiness.add_argument("--protocol", required=True, type=Path)
+    futures_readiness.add_argument(
+        "--partition",
+        required=True,
+        choices=[
+            PartitionName.DEVELOPMENT.value,
+            PartitionName.VALIDATION.value,
+            PartitionName.HOLDOUT.value,
+        ],
+    )
     futures_commands.add_parser(
         "datasets",
         help="List supported futures datasets",
@@ -636,6 +686,41 @@ def run(args: argparse.Namespace) -> int:
                 print(f"Manifest: {result.manifest_path}")
                 print(f"Report: {result.report_path}")
                 return 0
+            if args.futures_command == "compile-backtest":
+                result = build_futures_backtest_input_compiler(config).build(args.input)
+                state = "reused" if result.reused else "created"
+                print(f"Build: {result.build_id} ({state})")
+                print(
+                    f"Days: {result.day_rows}; targets: {result.target_rows}; "
+                    f"rolls: {result.roll_rows}; "
+                    f"deferred roll resizes: {result.deferred_resize_rows}"
+                )
+                print(f"Input: {result.input_path}")
+                print(f"Manifest: {result.manifest_path}")
+                print(f"Report: {result.report_path}")
+                return 0
+            if args.futures_command == "validate-strategy":
+                result = build_futures_validation_service(config).run(args.input)
+                print(f"Experiment: {result.experiment_id}")
+                print(
+                    f"Protocol: {result.protocol_id}; partition: {result.partition.value}; "
+                    f"scenarios: {result.scenario_count}; accepted: {result.accepted}"
+                )
+                print(f"Result: {result.result_json}")
+                print(f"Report: {result.result_markdown}")
+                return 0 if result.accepted else 1
+            if args.futures_command == "validation-readiness":
+                result = build_futures_validation_readiness_service(config).audit(
+                    args.protocol,
+                    PartitionName(args.partition),
+                    config.provider.name,
+                )
+                print(
+                    f"Protocol: {result.protocol_id}; partition: {result.partition.value}; "
+                    f"ready: {result.ready}; issues: {result.issue_count}"
+                )
+                print(f"Report: {result.report_markdown}")
+                return 0 if result.ready else 1
             service = build_futures_data_service(config)
             if args.futures_command == "update":
                 datasets = parse_futures_datasets(

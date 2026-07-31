@@ -8,12 +8,24 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from qtrade.config import FuturesConfig
+from qtrade.futures.backtest_input import FuturesBacktestInputCompiler
+from qtrade.futures.backtest_service import FuturesBacktestService
+from qtrade.futures.strategy_validation import FuturesStrategyValidationService
+from qtrade.futures.trend import FuturesTrendProtocol
 from qtrade.futures.trend_service import FuturesTrendService
+from qtrade.research.protocols import (
+    PartitionName,
+    ProtocolStore,
+    ResearchPartition,
+    StrategyProtocol,
+)
 
 RESEARCH_BUILD_ID = "trend-source-1"
 SIGNAL_DATE = date(2025, 5, 11)
 ELIGIBLE_DATE = date(2025, 5, 12)
 NEXT_ELIGIBLE_DATE = date(2025, 5, 13)
+AFTER_NEXT_DATE = date(2025, 5, 14)
 CONTRACT = "CU2607.SHF"
 
 
@@ -34,7 +46,12 @@ def write_source_build(
     next_eligible = eligible if next_eligible is None else next_eligible
     daily_paths = []
     settlement_paths = []
-    for trading_date in (SIGNAL_DATE, ELIGIBLE_DATE):
+    for trading_date in (
+        SIGNAL_DATE,
+        ELIGIBLE_DATE,
+        NEXT_ELIGIBLE_DATE,
+        AFTER_NEXT_DATE,
+    ):
         daily_path = (
             curated
             / "futures"
@@ -51,23 +68,47 @@ def write_source_build(
             / f"as_of_date={trading_date.isoformat()}"
             / "data.parquet"
         )
+        limit_path = (
+            curated
+            / "futures"
+            / "futures_limits"
+            / "provider=tushare"
+            / f"as_of_date={trading_date.isoformat()}"
+            / "data.parquet"
+        )
         daily_path.parent.mkdir(parents=True)
         settlement_path.parent.mkdir(parents=True)
+        limit_path.parent.mkdir(parents=True)
         pl.DataFrame(
             {
                 "ts_code": [CONTRACT],
                 "trade_date": [trading_date.strftime("%Y%m%d")],
                 "settle": [800.0],
+                "open": [800.0],
+                "high": [810.0],
+                "low": [790.0],
+                "vol": [1_000.0],
             }
         ).write_parquet(daily_path)
         pl.DataFrame(
             {
                 "ts_code": [CONTRACT],
                 "trade_date": [trading_date.strftime("%Y%m%d")],
+                "settle": [800.0],
                 "long_margin_rate": [0.10],
                 "short_margin_rate": [0.12],
+                "trading_fee": [2.0],
+                "trading_fee_rate": [0.0],
             }
         ).write_parquet(settlement_path)
+        pl.DataFrame(
+            {
+                "ts_code": [CONTRACT],
+                "trade_date": [trading_date.strftime("%Y%m%d")],
+                "up_limit": [880.0],
+                "down_limit": [720.0],
+            }
+        ).write_parquet(limit_path)
         daily_paths.append(daily_path)
         settlement_paths.append(settlement_path)
     contract_path = (
@@ -79,7 +120,9 @@ def write_source_build(
         / "data.parquet"
     )
     contract_path.parent.mkdir(parents=True)
-    pl.DataFrame({"ts_code": [CONTRACT], "multiplier": [5.0]}).write_parquet(contract_path)
+    pl.DataFrame({"ts_code": [CONTRACT], "multiplier": [5.0], "per_unit": [1.0]}).write_parquet(
+        contract_path
+    )
 
     research = curated / "futures" / "research" / f"build_id={RESEARCH_BUILD_ID}"
     research.mkdir(parents=True)
@@ -317,3 +360,140 @@ def test_trend_chain_emits_zero_target_when_a_held_product_leaves_universe(
     assert target["unconstrained_signed_lots"] == 0
     assert target["target_signed_lots"] == 0
     assert target["status"] == "universe_exit"
+
+
+def test_signal_chain_compiles_to_an_executable_stage3_input(tmp_path: Path) -> None:
+    curated = tmp_path / "curated"
+    reports = tmp_path / "reports"
+    write_source_build(curated)
+    trend_service = FuturesTrendService(curated, reports)
+    first_input = tmp_path / "first.json"
+    write_input(first_input)
+    first = trend_service.build(first_input)
+    second_input = tmp_path / "second.json"
+    write_input(
+        second_input,
+        signal_date=ELIGIBLE_DATE,
+        eligible_date=NEXT_ELIGIBLE_DATE,
+        previous_signal_build_id=first.build_id,
+    )
+    terminal = trend_service.build(second_input)
+    protocol_store = ProtocolStore(tmp_path / "runtime")
+    protocol_store.create(
+        StrategyProtocol(
+            protocol_id="synthetic_futures_v1",
+            title="Synthetic futures protocol",
+            hypothesis="Synthetic trend chain compiles without future data.",
+            partitions=[
+                ResearchPartition(
+                    name=PartitionName.DEVELOPMENT,
+                    start_date=SIGNAL_DATE,
+                    end_date=NEXT_ELIGIBLE_DATE,
+                ),
+                ResearchPartition(
+                    name=PartitionName.VALIDATION,
+                    start_date=date(2025, 6, 1),
+                    end_date=date(2025, 6, 30),
+                ),
+                ResearchPartition(
+                    name=PartitionName.HOLDOUT,
+                    start_date=date(2025, 7, 1),
+                    end_date=date(2025, 7, 31),
+                ),
+            ],
+            strategy={},
+            execution={
+                "scenarios": [
+                    {
+                        "name": "baseline",
+                        "execution_delay_days": 0,
+                        "cost_multiplier": 1.0,
+                        "margin_multiplier": 1.0,
+                    }
+                ]
+            },
+            acceptance_criteria={},
+            code_commit="unknown",
+            config_hash=FuturesTrendProtocol().protocol_id,
+        )
+    )
+    protocol = protocol_store.freeze("synthetic_futures_v1")
+    protocol_path = (
+        tmp_path / "runtime" / "research" / "protocols" / protocol.protocol_id / "protocol.yaml"
+    )
+    request_path = tmp_path / "compile.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "protocol_path": str(protocol_path),
+                "partition": "development",
+                "scenario": "baseline",
+                "research_build_id": RESEARCH_BUILD_ID,
+                "terminal_signal_build_id": terminal.build_id,
+                "initial_equity": 10_000_000,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    compiled = FuturesBacktestInputCompiler(curated, reports).build(request_path)
+    backtest = FuturesBacktestService(FuturesConfig(), curated, reports).build(compiled.input_path)
+
+    assert compiled.day_rows == 3
+    assert compiled.target_rows == 2
+    assert len(compiled.data_version) == 64
+    assert backtest.passed
+    assert backtest.day_rows == 3
+
+    validation_request = tmp_path / "validation.json"
+    validation_request.write_text(
+        json.dumps(
+            {
+                "protocol_path": str(protocol_path),
+                "partition": "development",
+                "research_build_id": RESEARCH_BUILD_ID,
+                "scenario_signal_build_ids": {"baseline": terminal.build_id},
+                "initial_equity": 10_000_000,
+            }
+        ),
+        encoding="utf-8",
+    )
+    validation = FuturesStrategyValidationService(
+        FuturesConfig(),
+        curated,
+        reports,
+        tmp_path / "validation-runtime",
+        tmp_path,
+        enforce_clean_git=False,
+    ).run(validation_request)
+
+    assert validation.accepted
+    assert validation.scenario_count == 1
+    assert validation.result_json.is_file()
+
+    missing_limit = (
+        curated
+        / "futures"
+        / "futures_limits"
+        / "provider=tushare"
+        / f"as_of_date={SIGNAL_DATE.isoformat()}"
+        / "data.parquet"
+    )
+    missing_limit.unlink()
+    blocked_request = tmp_path / "blocked-compile.json"
+    blocked_request.write_text(
+        json.dumps(
+            {
+                "protocol_path": str(protocol_path),
+                "partition": "development",
+                "scenario": "baseline",
+                "research_build_id": RESEARCH_BUILD_ID,
+                "terminal_signal_build_id": terminal.build_id,
+                "initial_equity": 9_000_000,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileNotFoundError, match="futures_limits"):
+        FuturesBacktestInputCompiler(curated, reports).build(blocked_request)

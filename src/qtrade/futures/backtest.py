@@ -81,12 +81,15 @@ class FuturesDailyPortfolioInput:
     roll_plans: tuple[FuturesRollPlan, ...] = ()
     liquidation_priority: tuple[FuturesLiquidationSpec, ...] = ()
     rebalance_id: str | None = None
+    target_eligible_date: date | None = None
 
     def __post_init__(self) -> None:
         if self.next_trade_date <= self.trade_date:
             raise ValueError("Next futures trade date must follow the current trade date.")
         if self.targets and not self.rebalance_id:
             raise ValueError("Futures targets require a rebalance ID.")
+        if self.target_eligible_date is not None and self.target_eligible_date <= self.trade_date:
+            raise ValueError("Target eligible date must follow the signal date.")
 
 
 @dataclass(frozen=True)
@@ -447,7 +450,7 @@ class FuturesDailyPortfolioEngine:
                 self.ledger,
                 rebalance_id=str(day.rebalance_id),
                 signal_date=day.trade_date,
-                eligible_date=day.next_trade_date,
+                eligible_date=day.target_eligible_date or day.next_trade_date,
                 targets=list(day.targets),
             )
             self._append_sequence(self._normal_sequences, generated)

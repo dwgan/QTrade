@@ -66,6 +66,22 @@ def test_futures_data_commands_parse() -> None:
     trend = parser.parse_args(
         ["futures", "trend", "--input", "runtime/futures-trend.json"]
     )
+    compile_backtest = parser.parse_args(
+        ["futures", "compile-backtest", "--input", "runtime/futures-compile.json"]
+    )
+    validate_strategy = parser.parse_args(
+        ["futures", "validate-strategy", "--input", "runtime/futures-validate.json"]
+    )
+    readiness = parser.parse_args(
+        [
+            "futures",
+            "validation-readiness",
+            "--protocol",
+            "config/futures_trend_v1.yaml",
+            "--partition",
+            "development",
+        ]
+    )
 
     assert update.futures_command == "update"
     assert backfill.futures_command == "backfill"
@@ -76,6 +92,10 @@ def test_futures_data_commands_parse() -> None:
     assert backtest.input.name == "futures-backtest.json"
     assert trend.futures_command == "trend"
     assert trend.input.name == "futures-trend.json"
+    assert compile_backtest.futures_command == "compile-backtest"
+    assert validate_strategy.futures_command == "validate-strategy"
+    assert readiness.futures_command == "validation-readiness"
+    assert readiness.partition == "development"
 
 
 def test_industry_analysis_command_parses() -> None:

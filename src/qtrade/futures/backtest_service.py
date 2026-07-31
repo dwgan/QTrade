@@ -211,9 +211,11 @@ class FuturesBacktestService:
     def _day(
         self,
         raw: dict[str, Any],
-    ) -> tuple[FuturesDailyPortfolioInput, list[tuple[str, str]]]:
+    ) -> tuple[FuturesDailyPortfolioInput, list[tuple[str, str, date]]]:
         trading_date = date.fromisoformat(str(raw["trade_date"]))
         next_date = date.fromisoformat(str(raw["next_trade_date"]))
+        target_eligible_date = date.fromisoformat(str(raw.get("target_eligible_date", next_date)))
+        target_selection_date = date.fromisoformat(str(raw.get("target_selection_date", next_date)))
         bars = {
             str(row["contract_code"]).strip().upper(): FuturesDailyExecutionBar(
                 trade_date=trading_date,
@@ -237,11 +239,11 @@ class FuturesBacktestService:
             marks[code] = FuturesSettlementMark(code, float(row["settlement_price"]), mark_rate)
             rates[code] = FuturesDirectionalMarginRates(long_rate, short_rate)
         targets: list[FuturesPositionTarget] = []
-        product_targets: list[tuple[str, str]] = []
+        product_targets: list[tuple[str, str, date]] = []
         for row in raw.get("targets", []):
             code = str(row["contract_code"]).strip().upper()
             product = str(row["product_code"]).strip().upper()
-            product_targets.append((product, code))
+            product_targets.append((product, code, target_selection_date))
             targets.append(
                 FuturesPositionTarget(
                     code,
@@ -258,6 +260,7 @@ class FuturesBacktestService:
             (
                 str(row["product_code"]).strip().upper(),
                 str(row["new_contract"]).strip().upper(),
+                next_date,
             )
             for row in roll_rows
         )
@@ -282,6 +285,7 @@ class FuturesBacktestService:
                 roll_plans=rolls,
                 liquidation_priority=liquidations,
                 rebalance_id=raw.get("rebalance_id"),
+                target_eligible_date=target_eligible_date,
             ),
             product_targets,
         )
@@ -297,15 +301,18 @@ class FuturesBacktestService:
             "multiplier": float(row["multiplier"]),
             "tick_size": float(row["tick_size"]),
         }
-        fees = self._fees(row.get("fees", {}))
+        default_fees = row.get("fees", {})
+        close_fees = self._fees(row.get("close_fees", default_fees))
+        open_fees = self._fees(row.get("open_fees", default_fees))
+        close_offset = FuturesOffset(row.get("close_offset", "close_yesterday"))
         return FuturesRollPlan(
             roll_id,
             FuturesOrder(
                 order_id=f"{roll_id}:close",
                 contract_code=str(row["old_contract"]).strip().upper(),
                 side=close_side,
-                offset=FuturesOffset(row.get("close_offset", "close_yesterday")),
-                fee_rule=fees.rule_for(FuturesOffset(row.get("close_offset", "close_yesterday"))),
+                offset=close_offset,
+                fee_rule=close_fees.rule_for(close_offset),
                 **common,
             ),
             FuturesOrder(
@@ -313,7 +320,7 @@ class FuturesBacktestService:
                 contract_code=str(row["new_contract"]).strip().upper(),
                 side=side,
                 offset=FuturesOffset.OPEN,
-                fee_rule=fees.rule_for(FuturesOffset.OPEN),
+                fee_rule=open_fees.rule_for(FuturesOffset.OPEN),
                 **common,
             ),
         )
@@ -355,11 +362,11 @@ class FuturesBacktestService:
     @staticmethod
     def _validate_targets(
         day: FuturesDailyPortfolioInput,
-        targets: list[tuple[str, str]],
+        targets: list[tuple[str, str, date]],
         lookup: dict[tuple[str, str], str],
     ) -> None:
-        for product, contract in targets:
-            key = (day.next_trade_date.isoformat(), product)
+        for product, contract, selection_date in targets:
+            key = (selection_date.isoformat(), product)
             selected = lookup.get(key)
             if selected is None:
                 raise ValueError(

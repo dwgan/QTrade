@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, model_validator
 RESEARCH_CODE_PATHS = (
     "src/qtrade/factors",
     "src/qtrade/research",
+    "src/qtrade/futures",
     "src/qtrade/data",
     "src/qtrade/config.py",
     "src/qtrade/domain.py",
@@ -254,6 +255,21 @@ class ProtocolStore:
         path = self._directory(protocol.protocol_id) / "protocol.yaml"
         if path.exists():
             raise FileExistsError(f"Protocol already exists: {protocol.protocol_id}")
+        self._write_protocol(path, protocol)
+        self._write_state(ProtocolState(protocol_id=protocol.protocol_id))
+        return path
+
+    def install_frozen(self, protocol: StrategyProtocol) -> Path:
+        if protocol.status != ProtocolStatus.FROZEN:
+            raise ValueError("Only a frozen protocol can be installed.")
+        if protocol.content_hash != protocol.calculated_hash():
+            raise ValueError("Frozen protocol content hash mismatch.")
+        path = self._directory(protocol.protocol_id) / "protocol.yaml"
+        if path.exists():
+            installed = self.load(protocol.protocol_id)
+            if installed.content_hash != protocol.content_hash:
+                raise ValueError("Installed protocol differs from committed frozen protocol.")
+            return path
         self._write_protocol(path, protocol)
         self._write_state(ProtocolState(protocol_id=protocol.protocol_id))
         return path

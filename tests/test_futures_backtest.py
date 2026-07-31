@@ -351,3 +351,48 @@ def test_same_day_target_and_roll_contract_conflict_is_rejected_before_settlemen
         )
 
     assert engine.ledger.snapshots == []
+
+
+def test_target_can_be_frozen_for_an_extra_execution_delay_day() -> None:
+    first = date(2026, 5, 6)
+    second = date(2026, 5, 7)
+    third = date(2026, 5, 8)
+    fourth = date(2026, 5, 11)
+    code = "A2609.DCE"
+    engine = FuturesDailyPortfolioEngine(10_000, slippage_ticks=0)
+
+    submitted = engine.run_day(
+        FuturesDailyPortfolioInput(
+            first,
+            second,
+            bars={},
+            settlement_marks={},
+            margin_rates={code: rates()},
+            targets=(target(code, 1),),
+            rebalance_id="delayed-target",
+            target_eligible_date=third,
+        )
+    )
+    waiting = engine.run_day(
+        FuturesDailyPortfolioInput(
+            second,
+            third,
+            bars={code: bar(second, 100)},
+            settlement_marks={code: mark(code, 100, 0.1)},
+            margin_rates={code: rates()},
+        )
+    )
+    filled = engine.run_day(
+        FuturesDailyPortfolioInput(
+            third,
+            fourth,
+            bars={code: bar(third, 101)},
+            settlement_marks={code: mark(code, 101, 0.1)},
+            margin_rates={code: rates()},
+        )
+    )
+
+    assert submitted.generated_target_orders[0].eligible_date == third
+    assert waiting.executions[0].reason == "not_eligible"
+    assert filled.executions[0].fill is not None
+    assert engine.ledger.positions[code].lots == 1
