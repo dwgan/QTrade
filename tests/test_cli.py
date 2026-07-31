@@ -60,12 +60,17 @@ def test_futures_data_commands_parse() -> None:
             "2026-07-24",
         ]
     )
+    backtest = parser.parse_args(
+        ["futures", "backtest", "--input", "runtime/futures-backtest.json"]
+    )
 
     assert update.futures_command == "update"
     assert backfill.futures_command == "backfill"
     assert contract.ts_code == "CU2608.SHF"
     assert series.futures_command == "build-series"
     assert series.start == date(2026, 7, 1)
+    assert backtest.futures_command == "backtest"
+    assert backtest.input.name == "futures-backtest.json"
 
 
 def test_industry_analysis_command_parses() -> None:

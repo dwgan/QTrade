@@ -95,6 +95,9 @@ futures:
   universe_minimum_open_interest: 1000
   universe_minimum_daily_amount: 0
   continuous_max_abs_return: 0.25
+  execution_slippage_ticks: 1
+  margin_call_buffer: 1.05
+  stress_margin_multiplier: 1.5
   update_datasets:
     - futures_contracts
     - futures_contract_rules

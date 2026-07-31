@@ -49,3 +49,11 @@ def test_futures_config_normalizes_exchanges_and_products() -> None:
 def test_futures_config_rejects_unknown_exchange() -> None:
     with pytest.raises(ValueError, match="Unsupported futures exchanges"):
         FuturesConfig(exchanges=["SSE"])
+
+
+def test_futures_execution_risk_defaults_are_conservative() -> None:
+    config = FuturesConfig()
+
+    assert config.execution_slippage_ticks == 1
+    assert config.margin_call_buffer == 1.05
+    assert config.stress_margin_multiplier == 1.5

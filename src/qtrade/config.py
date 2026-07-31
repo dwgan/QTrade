@@ -185,6 +185,9 @@ class FuturesConfig(BaseModel):
     universe_minimum_open_interest: float = Field(default=1000, ge=0)
     universe_minimum_daily_amount: float = Field(default=0, ge=0)
     continuous_max_abs_return: float = Field(default=0.25, gt=0, le=1)
+    execution_slippage_ticks: int = Field(default=1, ge=0, le=100)
+    margin_call_buffer: float = Field(default=1.05, ge=1, le=2)
+    stress_margin_multiplier: float = Field(default=1.5, ge=1, le=5)
 
     @field_validator("exchanges")
     @classmethod

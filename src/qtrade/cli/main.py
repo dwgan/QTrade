@@ -16,6 +16,7 @@ from qtrade.data.validation import DataValidator
 from qtrade.domain import Dataset
 from qtrade.factors.service import FactorAnalysisService
 from qtrade.futures.audit import FuturesDataAuditService
+from qtrade.futures.backtest_service import FuturesBacktestService
 from qtrade.futures.domain import FuturesDataset
 from qtrade.futures.research import FuturesResearchService
 from qtrade.futures.service import FuturesDataService
@@ -228,6 +229,15 @@ def build_futures_research_service(config: AppConfig) -> FuturesResearchService:
     )
 
 
+def build_futures_backtest_service(config: AppConfig) -> FuturesBacktestService:
+    config.paths.create()
+    return FuturesBacktestService(
+        config=config.futures,
+        curated_root=config.paths.curated,
+        reports_root=config.paths.reports,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qtrade", description="QTrade research toolkit")
     parser.add_argument("--config", default="config/base.yaml", help="YAML configuration path")
@@ -346,6 +356,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     futures_series.add_argument("--start", required=True, type=parse_date)
     futures_series.add_argument("--end", required=True, type=parse_date)
+    futures_backtest = futures_commands.add_parser(
+        "backtest",
+        help="Build an immutable actual-contract futures backtest from a frozen input",
+    )
+    futures_backtest.add_argument("--input", required=True, type=Path)
     futures_commands.add_parser(
         "datasets",
         help="List supported futures datasets",
@@ -573,6 +588,18 @@ def run(args: argparse.Namespace) -> int:
                     f"Roll rows: {result.roll_rows}; "
                     f"continuous rows: {result.continuous_rows}; "
                     f"universe rows: {result.universe_rows}; "
+                    f"quality issues: {result.issue_count}"
+                )
+                print(f"Manifest: {result.manifest_path}")
+                print(f"Quality report: {result.report_path}")
+                return 0 if result.passed else 1
+            if args.futures_command == "backtest":
+                result = build_futures_backtest_service(config).build(args.input)
+                state = "reused" if result.reused else "created"
+                print(f"Build: {result.build_id} ({state})")
+                print(
+                    f"Days: {result.day_rows}; orders: {result.order_rows}; "
+                    f"execution attempts: {result.execution_rows}; "
                     f"quality issues: {result.issue_count}"
                 )
                 print(f"Manifest: {result.manifest_path}")
