@@ -41,6 +41,7 @@ class ProviderConfig(BaseModel):
     retry_attempts: int = Field(default=3, ge=1, le=10)
     parallel_requests: int = Field(default=3, ge=1, le=5)
     mcp_parallel_requests: int = Field(default=1, ge=1, le=3)
+    mcp_page_size: int = Field(default=500, ge=1, le=500)
     mcp_request_pause_seconds: float = Field(default=1.0, ge=0)
     backfill_parallel_dates: int = Field(default=2, ge=1, le=2)
 

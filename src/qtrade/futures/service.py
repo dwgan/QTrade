@@ -328,14 +328,10 @@ class FuturesDataService:
                 fields=fields,
             )
         if dataset == FuturesDataset.LIMITS:
-            return self._concat(
-                self.source.query(
-                    "ft_limit",
-                    trade_date=ymd,
-                    exchange=exchange,
-                    fields=fields,
-                )
-                for exchange in self.exchanges
+            return self.source.query(
+                "ft_limit",
+                trade_date=ymd,
+                fields=fields,
             )
         if dataset == FuturesDataset.CALENDAR:
             calendars: list[pl.DataFrame] = []

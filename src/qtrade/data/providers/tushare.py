@@ -132,9 +132,9 @@ class TushareProvider:
         url = self._config.mcp_url()
         if not url:
             raise RuntimeError("Tushare MCP URL is not configured.")
-        page_size = int(params.pop("mcp_page_size", 50))
-        if page_size < 1 or page_size > 50:
-            raise ValueError("Tushare MCP page size must be between 1 and 50.")
+        page_size = int(params.pop("mcp_page_size", self._config.mcp_page_size))
+        if page_size < 1 or page_size > 500:
+            raise ValueError("Tushare MCP page size must be between 1 and 500.")
         fields = str(params.pop("fields", ""))
         first_page, total = self._query_mcp_page(
             url,
