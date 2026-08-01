@@ -236,10 +236,15 @@ class FuturesDataService:
                 result.skipped_dates += 1
                 continue
             update = self.update(trading_date, datasets)
-            if update.succeeded:
+            all_requested_completed = all(
+                item.status == "completed" for item in update.datasets
+            )
+            if update.succeeded and all_requested_completed:
                 result.completed_dates += 1
             else:
                 result.failed_dates.append(trading_date)
+                if not all_requested_completed:
+                    break
         return result
 
     def backfill_contract(
@@ -323,10 +328,14 @@ class FuturesDataService:
                 fields=fields,
             )
         if dataset == FuturesDataset.LIMITS:
-            return self.source.query(
-                "ft_limit",
-                trade_date=ymd,
-                fields=fields,
+            return self._concat(
+                self.source.query(
+                    "ft_limit",
+                    trade_date=ymd,
+                    exchange=exchange,
+                    fields=fields,
+                )
+                for exchange in self.exchanges
             )
         if dataset == FuturesDataset.CALENDAR:
             calendars: list[pl.DataFrame] = []

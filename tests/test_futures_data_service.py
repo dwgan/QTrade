@@ -236,6 +236,24 @@ def test_backfill_skips_existing_required_partitions(tmp_path: Path) -> None:
     assert second.skipped_dates == 2
 
 
+def test_backfill_stops_when_requested_optional_dataset_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    service = make_service(
+        tmp_path,
+        FakeFuturesDataSource(limits_available=False),
+    )
+
+    result = service.backfill(
+        date(2026, 7, 23),
+        date(2026, 7, 24),
+        (FuturesDataset.LIMITS,),
+    )
+
+    assert result.completed_dates == 0
+    assert result.failed_dates == [date(2026, 7, 23)]
+
+
 def test_contract_backfill_partitions_bulk_response_by_date(
     tmp_path: Path,
 ) -> None:

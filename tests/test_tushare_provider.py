@@ -233,6 +233,7 @@ def test_tushare_ft_limit_can_page_through_documented_mcp_gateway(
         ProviderConfig(
             mcp_url_env="TEST_MCP_URL",
             request_pause_seconds=0,
+            mcp_request_pause_seconds=0,
         ),
         MarketConfig(),
         client=object(),

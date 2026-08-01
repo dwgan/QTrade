@@ -5,6 +5,7 @@ import io
 import re
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Any
 
@@ -135,11 +136,92 @@ class TushareProvider:
         if page_size < 1 or page_size > 50:
             raise ValueError("Tushare MCP page size must be between 1 and 50.")
         fields = str(params.pop("fields", ""))
-        rows: list[dict[str, str]] = []
-        offset = 0
-        total: int | None = None
-        first_keys: set[tuple[str | None, str | None]] = set()
-        while total is None or offset < total:
+        first_page, total = self._query_mcp_page(
+            url,
+            operation,
+            params,
+            fields,
+            page_size,
+            0,
+        )
+        rows = list(first_page)
+        if total is not None:
+            offsets = list(range(len(first_page), total, page_size))
+
+            def fetch(offset: int) -> tuple[list[dict[str, str]], int | None]:
+                return self._query_mcp_page(
+                    url,
+                    operation,
+                    params,
+                    fields,
+                    page_size,
+                    offset,
+                )
+
+            workers = min(self._config.mcp_parallel_requests, len(offsets))
+            if workers:
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    for offset, (page, reported_total) in zip(
+                        offsets,
+                        executor.map(fetch, offsets),
+                        strict=True,
+                    ):
+                        if reported_total is not None and reported_total != total:
+                            raise RuntimeError(
+                                "Tushare MCP reported inconsistent pagination totals."
+                            )
+                        expected = min(page_size, total - offset)
+                        if len(page) != expected:
+                            raise RuntimeError(
+                                f"Tushare MCP page at offset {offset} returned "
+                                f"{len(page)} rows; expected {expected}."
+                            )
+                        rows.extend(page)
+        else:
+            offset = len(first_page)
+            page = first_page
+            while len(page) == page_size:
+                page, reported_total = self._query_mcp_page(
+                    url,
+                    operation,
+                    params,
+                    fields,
+                    page_size,
+                    offset,
+                )
+                if reported_total is not None:
+                    total = reported_total
+                rows.extend(page)
+                offset += len(page)
+        if total is not None and len(rows) != total:
+            raise RuntimeError(
+                f"Tushare MCP returned {len(rows)} rows; expected total {total}."
+            )
+        keys = [(row.get("trade_date"), row.get("ts_code")) for row in rows]
+        if len(keys) != len(set(keys)):
+            raise RuntimeError("Tushare MCP returned duplicate futures limit rows.")
+        frame = pl.DataFrame(rows, infer_schema_length=None, strict=False)
+        numeric_columns = [
+            name for name in ("up_limit", "down_limit", "m_ratio") if name in frame.columns
+        ]
+        return frame.with_columns(
+            *(
+                pl.col(name).cast(pl.Float64, strict=False).alias(name)
+                for name in numeric_columns
+            ),
+            pl.lit("mcp_query_data").alias("source_transport"),
+            pl.lit(total).cast(pl.Int64).alias("source_reported_total"),
+        )
+
+    def _query_mcp_page(
+        self,
+        url: str,
+        operation: str,
+        params: dict[str, Any],
+        fields: str,
+        page_size: int,
+        offset: int,
+    ) -> tuple[list[dict[str, str]], int | None]:
             page_params = {**params, "limit": page_size, "offset": offset}
             arguments: dict[str, Any] = {
                 "api_name": operation,
@@ -165,40 +247,14 @@ class TushareProvider:
             if result.get("isError"):
                 raise RuntimeError(f"Tushare MCP request failed: {text}")
             match = re.search(r"共\s*(\d+)\s*条", text)
-            if match:
-                total = int(match.group(1))
+            total = int(match.group(1)) if match else None
             csv_text = "\n".join(
                 line for line in text.splitlines() if not line.startswith("...")
             )
             page = list(csv.DictReader(io.StringIO(csv_text))) if csv_text.strip() else []
-            if not page:
-                if total is not None and offset < total:
-                    raise RuntimeError(
-                        f"Tushare MCP pagination ended at {offset} rows before total {total}."
-                    )
-                break
-            first_key = (page[0].get("trade_date"), page[0].get("ts_code"))
-            if first_key in first_keys:
-                raise RuntimeError("Tushare MCP pagination did not advance.")
-            first_keys.add(first_key)
-            rows.extend(page)
-            offset += len(page)
-            if total is None and len(page) < page_size:
-                break
-            if self._config.request_pause_seconds:
-                time.sleep(self._config.request_pause_seconds)
-        frame = pl.DataFrame(rows, infer_schema_length=None, strict=False)
-        numeric_columns = [
-            name for name in ("up_limit", "down_limit", "m_ratio") if name in frame.columns
-        ]
-        return frame.with_columns(
-            *(
-                pl.col(name).cast(pl.Float64, strict=False).alias(name)
-                for name in numeric_columns
-            ),
-            pl.lit("mcp_query_data").alias("source_transport"),
-            pl.lit(total).cast(pl.Int64).alias("source_reported_total"),
-        )
+            if self._config.mcp_request_pause_seconds:
+                time.sleep(self._config.mcp_request_pause_seconds)
+            return page, total
 
     def _post_mcp(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         last_error: Exception | None = None
