@@ -123,6 +123,17 @@ class SparseFuturesDataSource(FakeFuturesDataSource):
         return frame
 
 
+class InactiveContractFuturesDataSource(FakeFuturesDataSource):
+    def query(self, operation: str, **params: Any) -> pl.DataFrame:
+        frame = super().query(operation, **params)
+        if operation == "fut_daily":
+            return frame.with_columns(
+                pl.lit(0.0).alias("vol"),
+                pl.lit(None).cast(pl.Float64).alias("oi"),
+            )
+        return frame
+
+
 def make_service(
     tmp_path: Path,
     source: FakeFuturesDataSource | None = None,
@@ -185,6 +196,21 @@ def test_sparse_ohlc_and_margin_are_warnings_not_silent_errors(
     assert result.succeeded
     codes = {issue.code for report in result.reports for issue in report.issues}
     assert codes == {"missing_intraday_ohlc", "missing_margin_rate"}
+
+
+def test_inactive_contract_missing_open_interest_is_visible_but_not_an_error(
+    tmp_path: Path,
+) -> None:
+    result = make_service(tmp_path, InactiveContractFuturesDataSource()).update(
+        date(2026, 7, 24),
+        (FuturesDataset.DAILY,),
+    )
+
+    assert result.succeeded
+    issues = [issue for report in result.reports for issue in report.issues]
+    assert [(issue.code, issue.rows) for issue in issues] == [
+        ("missing_inactive_open_interest", 1)
+    ]
 
 
 def test_backfill_skips_existing_required_partitions(tmp_path: Path) -> None:

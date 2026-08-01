@@ -128,7 +128,7 @@ class FuturesDataValidator:
             | (pl.col("settle") <= 0)
             | pl.col("vol").is_null()
             | (pl.col("vol") < 0)
-            | pl.col("oi").is_null()
+            | (pl.col("oi").is_null() & (pl.col("vol") > 0))
             | (pl.col("oi") < 0)
         ).height
         if invalid:
@@ -138,6 +138,19 @@ class FuturesDataValidator:
                     "invalid_market_data",
                     "Daily prices or activity are internally inconsistent.",
                     rows=invalid,
+                )
+            )
+        missing_inactive_oi = numeric.filter(
+            pl.col("oi").is_null() & (pl.col("vol") == 0)
+        ).height
+        if missing_inactive_oi:
+            report.issues.append(
+                ValidationIssue(
+                    Severity.WARNING,
+                    "missing_inactive_open_interest",
+                    "Provider omitted open interest for inactive zero-volume contracts; "
+                    "the values remain null and cannot qualify for the tradable universe.",
+                    rows=missing_inactive_oi,
                 )
             )
         missing_ohlc = numeric.filter(
