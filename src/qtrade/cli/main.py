@@ -21,6 +21,7 @@ from qtrade.futures.backtest_service import FuturesBacktestService
 from qtrade.futures.domain import FuturesDataset
 from qtrade.futures.research import FuturesResearchService
 from qtrade.futures.service import FuturesDataService
+from qtrade.futures.shadow import FuturesShadowObservationService
 from qtrade.futures.storage import FuturesParquetStore
 from qtrade.futures.strategy_validation import FuturesStrategyValidationService
 from qtrade.futures.trend_service import FuturesTrendService
@@ -273,6 +274,11 @@ def build_futures_validation_readiness_service(
     return FuturesValidationReadinessService(config.paths.curated, config.paths.reports)
 
 
+def build_futures_shadow_service(config: AppConfig) -> FuturesShadowObservationService:
+    config.paths.create()
+    return FuturesShadowObservationService(config.paths.curated, config.paths.reports)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qtrade", description="QTrade research toolkit")
     parser.add_argument("--config", default="config/base.yaml", help="YAML configuration path")
@@ -425,6 +431,11 @@ def build_parser() -> argparse.ArgumentParser:
             PartitionName.HOLDOUT.value,
         ],
     )
+    futures_shadow = futures_commands.add_parser(
+        "shadow-observe",
+        help="Record one immutable forward futures execution observation",
+    )
+    futures_shadow.add_argument("--input", required=True, type=Path)
     futures_commands.add_parser(
         "datasets",
         help="List supported futures datasets",
@@ -721,6 +732,19 @@ def run(args: argparse.Namespace) -> int:
                 )
                 print(f"Report: {result.report_markdown}")
                 return 0 if result.ready else 1
+            if args.futures_command == "shadow-observe":
+                result = build_futures_shadow_service(config).build(args.input)
+                state = "reused" if result.reused else "created"
+                print(f"Build: {result.build_id} ({state})")
+                print(
+                    f"Observation date: {result.observation_date}; "
+                    f"execution legs: {result.execution_rows}; "
+                    f"blocked: {result.blocked_rows}; "
+                    f"fully executable: {result.fully_executable}"
+                )
+                print(f"Manifest: {result.manifest_path}")
+                print(f"Report: {result.report_path}")
+                return 0
             service = build_futures_data_service(config)
             if args.futures_command == "update":
                 datasets = parse_futures_datasets(

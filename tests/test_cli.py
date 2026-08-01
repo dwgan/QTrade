@@ -82,6 +82,9 @@ def test_futures_data_commands_parse() -> None:
             "development",
         ]
     )
+    shadow = parser.parse_args(
+        ["futures", "shadow-observe", "--input", "runtime/futures-shadow.json"]
+    )
 
     assert update.futures_command == "update"
     assert backfill.futures_command == "backfill"
@@ -96,6 +99,8 @@ def test_futures_data_commands_parse() -> None:
     assert validate_strategy.futures_command == "validate-strategy"
     assert readiness.futures_command == "validation-readiness"
     assert readiness.partition == "development"
+    assert shadow.futures_command == "shadow-observe"
+    assert shadow.input.name == "futures-shadow.json"
 
 
 def test_industry_analysis_command_parses() -> None:
