@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import threading
 import webbrowser
 from datetime import date
@@ -21,6 +22,7 @@ from qtrade.ui.application import (
     SubprocessBacktestRunner,
     SubprocessPipelineRunner,
     WatchlistEditor,
+    create_futures_ui_repository,
 )
 
 MAX_BODY_BYTES = 64 * 1024
@@ -32,6 +34,11 @@ class UiApplication:
         self.config_path = Path(config_path)
         self.assets_root = Path(assets_root)
         self.repository = OverviewRepository(config.paths.reports)
+        self.futures = create_futures_ui_repository(
+            config.paths.curated,
+            config.paths.reports,
+            config.provider.name,
+        )
         self.watchlist = WatchlistEditor(config_path)
         self.tasks = PipelineTaskManager(
             SubprocessPipelineRunner(
@@ -78,6 +85,9 @@ def make_handler(application: UiApplication) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/futures/"):
+                self._futures_get(parsed.path, parsed.query)
+                return
             if parsed.path == "/api/meta":
                 self._json(application.meta())
                 return
@@ -120,6 +130,34 @@ def make_handler(application: UiApplication) -> type[BaseHTTPRequestHandler]:
                 self._json(application.repository.overview(as_of_date))
                 return
             self._asset(parsed.path)
+
+        def _futures_get(self, path: str, query_string: str) -> None:
+            try:
+                query = parse_qs(query_string)
+                if path == "/api/futures/meta":
+                    value = application.futures.meta()
+                elif path == "/api/futures/overview":
+                    signal_id = query.get("id", [None])[0]
+                    value = application.futures.dashboard(signal_id)
+                elif path == "/api/futures/chart":
+                    product = query.get("product", [""])[0].strip().upper()
+                    if not product:
+                        raise ValueError("期货品种代码不能为空。")
+                    signal_id = query.get("id", [None])[0]
+                    value = application.futures.chart(signal_id, product)
+                elif path == "/api/futures/backtest":
+                    build_id = query.get("id", [None])[0]
+                    value = application.futures.backtest(build_id)
+                else:
+                    self._futures_error(HTTPStatus.NOT_FOUND, "not_found", "接口不存在。")
+                    return
+                self._json(value)
+            except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+                self._futures_error(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_request",
+                    self._public_message(exc),
+                )
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
@@ -227,6 +265,18 @@ def make_handler(application: UiApplication) -> type[BaseHTTPRequestHandler]:
 
         def _error(self, status: HTTPStatus, message: str) -> None:
             self._json({"error": message}, status=status)
+
+        def _futures_error(self, status: HTTPStatus, code: str, message: str) -> None:
+            self._json(
+                {"error": {"code": code, "message": message}},
+                status=status,
+            )
+
+        @staticmethod
+        def _public_message(exc: Exception) -> str:
+            message = str(exc).strip() or "期货产物不可用。"
+            message = re.sub(r"[A-Za-z]:[\\/][^\r\n\"']+", "[本地路径]", message)
+            return message[:300]
 
     return QTradeHandler
 

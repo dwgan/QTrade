@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -107,6 +108,13 @@ def test_backtest_build_is_content_addressed_complete_and_reused(tmp_path: Path)
     manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
     assert manifest["research_build_id"] == RESEARCH_BUILD_ID
     assert len(manifest["inputs"]) == 3
+    assert {item["path"] for item in manifest["output_versions"]} == set(
+        service.OUTPUT_FILES.values()
+    )
+    for version in manifest["output_versions"]:
+        path = first.output_dir / version["path"]
+        assert version["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert version["size"] == path.stat().st_size
 
 
 def test_backtest_input_change_creates_new_build(tmp_path: Path) -> None:

@@ -10,6 +10,10 @@ const state = {
   dailyPositions: [],
   securities: {},
   currentExperimentId: null,
+  market: "equity",
+  futuresMeta: null,
+  futuresOverview: null,
+  futuresChart: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -58,7 +62,10 @@ async function api(path, options = {}) {
     ...options,
   });
   const value = await response.json();
-  if (!response.ok) throw new Error(value.error || `请求失败 (${response.status})`);
+  if (!response.ok) {
+    const message = typeof value.error === "object" ? value.error?.message : value.error;
+    throw new Error(message || `请求失败 (${response.status})`);
+  }
   return value;
 }
 
@@ -747,7 +754,166 @@ async function saveWatchlist() {
   }
 }
 
+const money = (value) => value == null ? "—" : new Intl.NumberFormat("zh-CN", {
+  maximumFractionDigits: 0,
+}).format(Number(value));
+
+function setMarket(market) {
+  state.market = market;
+  $("equityWorkspace").classList.toggle("hidden", market !== "equity");
+  $("futuresWorkspace").classList.toggle("hidden", market !== "futures");
+  document.querySelector(".sidebar .nav")?.classList.toggle("market-hidden", market !== "equity");
+  document.querySelectorAll(".market-button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.market === market);
+  });
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function futuresDirection(lots) {
+  const value = Number(lots || 0);
+  if (value > 0) return ["多头", "state-positive"];
+  if (value < 0) return ["空头", "state-warning"];
+  return ["空仓", "state-neutral"];
+}
+
+function renderFuturesIssues(nodeId, issues, emptyMessage = "未记录问题。") {
+  const node = $(nodeId);
+  node.innerHTML = issues?.length ? issues.map((issue) => `
+    <article class="issue-item ${issue.severity === "error" ? "critical" : ""}">
+      <strong>${escapeHtml(issue.code || "unknown")}</strong>
+      <span>${escapeHtml(issue.message || "未提供说明")}</span>
+    </article>`).join("") : `<p class="empty-inline">${escapeHtml(emptyMessage)}</p>`;
+}
+
+function renderFuturesOverview(value) {
+  state.futuresOverview = value;
+  const signal = value.signal || {};
+  const quality = value.quality || { ready: false, issues: [] };
+  $("futuresSignalStatus").textContent = signal.build_id ? `${signal.target_count || 0} 个目标` : "无正式信号";
+  $("futuresSignalDate").textContent = text(signal.signal_date);
+  $("futuresEligibleDate").textContent = `可执行日 ${text(signal.eligible_date)}`;
+  $("futuresRiskBudget").textContent = money(signal.daily_risk_budget);
+  $("futuresRiskUsed").textContent = `实际风险 ${money(signal.total_daily_risk)}`;
+  $("futuresInitialMargin").textContent = money(signal.initial_margin);
+  $("futuresStressMargin").textContent = money(signal.stress_margin);
+  $("futuresProtocol").textContent = signal.build_id
+    ? `协议 ${text(signal.protocol_id)} · 信号构建 ${signal.build_id} · 研究构建 ${text(signal.research_build_id)}`
+    : "没有通过质量门禁且完成哈希校验的正式 signal 快照；页面不会推导或补造信号。";
+  $("futuresReadyState").textContent = quality.ready ? "可验证" : "存在阻断";
+  $("futuresReadyState").className = `outline-pill ${quality.ready ? "ready" : "blocked"}`;
+  $("futuresQualitySummary").textContent = quality.ready
+    ? "当前验证分区满足正式协议的数据就绪要求。"
+    : "当前真实数据尚不满足正式验证要求，禁止将缺失数据替换为合成收益或信号。";
+  $("futuresCoverage").innerHTML = Object.entries(quality.dataset_coverage || {}).map(([name, item]) => `
+    <div><strong>${escapeHtml(name)}</strong><span>${escapeHtml(item.first || "缺失")} → ${escapeHtml(item.last || "缺失")}</span><small>${Number(item.partitions || 0)} 个分区</small></div>`).join("") || '<p class="empty-inline">暂无覆盖审计记录。</p>';
+
+  const targets = value.targets || [];
+  $("futuresSignalRows").innerHTML = targets.length ? targets.map((target) => {
+    const [direction, css] = futuresDirection(target.target_signed_lots);
+    return `<tr><td><strong>${escapeHtml(target.product_code)}</strong></td><td>${escapeHtml(target.contract_code)}</td><td>${escapeHtml(target.sector)}</td><td><span class="state-tag ${css}">${direction}</span></td><td class="number">${Math.abs(Number(target.target_signed_lots || 0))}</td><td class="number">${num(target.signal_strength, 3)}</td><td class="number">${money(target.initial_margin)}</td><td class="number">${money(target.stress_margin)}</td><td>${escapeHtml(target.status)}</td></tr>`;
+  }).join("") : '<tr><td colspan="9" class="empty-inline">无经过验证的正式目标，不展示推测信号。</td></tr>';
+
+  const portfolio = value.portfolio || {};
+  const positions = portfolio.positions || [];
+  $("futuresPortfolioDate").textContent = `账本日期 ${text(portfolio.trade_date)}`;
+  $("futuresPortfolioEquity").textContent = `权益 ${money(portfolio.equity)}`;
+  $("futuresPositionRows").innerHTML = positions.length ? positions.map((position) => {
+    const [direction, css] = futuresDirection(position.signed_lots);
+    return `<tr><td><strong>${escapeHtml(position.contract_code)}</strong></td><td><span class="state-tag ${css}">${direction}</span></td><td class="number">${Math.abs(Number(position.signed_lots || 0))}</td><td class="number">${num(position.multiplier, 2)}</td><td class="number">${money(position.settlement_basis)}</td></tr>`;
+  }).join("") : '<tr><td colspan="5" class="empty-inline">没有可验证的实际合约持仓。</td></tr>';
+
+  const productSelect = $("futuresProductSelect");
+  productSelect.innerHTML = targets.length
+    ? targets.map((target) => `<option value="${escapeHtml(target.product_code)}">${escapeHtml(target.product_code)} · ${escapeHtml(target.contract_code)}</option>`).join("")
+    : '<option value="">暂无品种</option>';
+  renderFuturesIssues("futuresIssues", quality.issues || [], "审计未记录额外问题。");
+}
+
+function renderFuturesChart() {
+  const chart = state.futuresChart || {};
+  const mode = $("futuresSeriesMode").value;
+  const rows = chart[mode] || [];
+  const values = rows.map((row) => Number(mode === "continuous" ? row.research_price : (row.settle ?? row.close))).filter(Number.isFinite);
+  const svg = $("futuresChart");
+  $("futuresChartEmpty").classList.toggle("hidden", values.length > 0);
+  svg.classList.toggle("hidden", values.length === 0);
+  if (!values.length) {
+    svg.innerHTML = "";
+  } else {
+    const width = 1000, height = 360, pad = 42;
+    const low = Math.min(...values), high = Math.max(...values);
+    const span = high - low || 1;
+    const points = values.map((value, index) => {
+      const x = pad + index * (width - pad * 2) / Math.max(1, values.length - 1);
+      const y = height - pad - (value - low) * (height - pad * 2) / span;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+    svg.innerHTML = `<line class="chart-grid" x1="42" y1="318" x2="958" y2="318"></line><polyline class="futures-price-line" points="${points}"></polyline><text class="chart-label" x="42" y="25">${escapeHtml(money(high))}</text><text class="chart-label" x="42" y="344">${escapeHtml(money(low))}</text>`;
+  }
+  const rolls = chart.rolls || [];
+  $("futuresRollMarkers").innerHTML = rolls.length ? rolls.map((roll) => `<span><strong>${escapeHtml(roll.effective_date)}</strong> ${escapeHtml(roll.previous_contract)} → ${escapeHtml(roll.selected_contract)}</span>`).join("") : '<span>所选窗口内无换月标记。</span>';
+}
+
+async function loadFuturesChart() {
+  const product = $("futuresProductSelect").value;
+  if (!product) {
+    state.futuresChart = null;
+    renderFuturesChart();
+    return;
+  }
+  const signalId = $("futuresSignalSelect").value;
+  const suffix = signalId ? `&id=${encodeURIComponent(signalId)}` : "";
+  state.futuresChart = await api(`/api/futures/chart?product=${encodeURIComponent(product)}${suffix}`);
+  renderFuturesChart();
+}
+
+function renderFuturesBacktest(value) {
+  const metrics = value.metrics || {};
+  $("futuresBacktestPassed").textContent = value.build_id ? (value.passed ? "质量门禁通过" : "未通过") : "暂无回测";
+  $("futuresBtInitial").textContent = money(metrics.initial_equity);
+  $("futuresBtFinal").textContent = money(metrics.final_equity);
+  $("futuresBtReturn").textContent = pct(metrics.total_return, 2);
+  $("futuresBtDrawdown").textContent = pct(metrics.maximum_drawdown, 2);
+  renderFuturesIssues("futuresBacktestIssues", value.issues || [], value.build_id ? "未记录执行或账本问题。" : "没有可验证的回测构建。");
+}
+
+async function loadFuturesBacktest() {
+  const id = $("futuresBacktestSelect").value;
+  renderFuturesBacktest(await api(`/api/futures/backtest${id ? `?id=${encodeURIComponent(id)}` : ""}`));
+}
+
+async function loadFuturesWorkspace() {
+  $("futuresLoading").classList.remove("hidden");
+  $("futuresError").classList.add("hidden");
+  try {
+    const meta = await api("/api/futures/meta");
+    state.futuresMeta = meta;
+    $("futuresSignalSelect").innerHTML = meta.signals?.length
+      ? meta.signals.map((item) => `<option value="${escapeHtml(item.build_id)}">${escapeHtml(item.signal_date || "未知日期")} · ${escapeHtml(item.build_id)}</option>`).join("")
+      : '<option value="">暂无正式信号</option>';
+    $("futuresBacktestSelect").innerHTML = meta.backtests?.length
+      ? meta.backtests.map((item) => `<option value="${escapeHtml(item.build_id)}">${escapeHtml(item.last_trade_date || "未知日期")} · ${escapeHtml(item.build_id)}</option>`).join("")
+      : '<option value="">暂无回测构建</option>';
+    const overview = await api("/api/futures/overview");
+    renderFuturesOverview(overview);
+    $("futuresContent").classList.remove("hidden");
+    try { await loadFuturesChart(); } catch (error) { state.futuresChart = null; renderFuturesChart(); toast(`期货图表：${error.message}`, true); }
+    try { await loadFuturesBacktest(); } catch (error) { renderFuturesBacktest({ issues: [{ severity: "error", code: "artifact_unavailable", message: error.message }] }); }
+  } catch (error) {
+    $("futuresContent").classList.add("hidden");
+    $("futuresError").textContent = `期货工作区已阻断：${error.message}`;
+    $("futuresError").classList.remove("hidden");
+  } finally {
+    $("futuresLoading").classList.add("hidden");
+  }
+}
+
 function bindEvents() {
+  document.querySelectorAll(".market-button").forEach((button) => button.addEventListener("click", () => setMarket(button.dataset.market)));
+  $("futuresSignalSelect").addEventListener("change", loadFuturesWorkspace);
+  $("futuresBacktestSelect").addEventListener("change", loadFuturesBacktest);
+  $("futuresProductSelect").addEventListener("change", loadFuturesChart);
+  $("futuresSeriesMode").addEventListener("change", renderFuturesChart);
   $("historyDate").addEventListener("change", (event) => {
     if (!event.target.value) return;
     $("tradeDate").value = event.target.value;
@@ -782,6 +948,7 @@ function bindEvents() {
 
 async function init() {
   bindEvents();
+  loadFuturesWorkspace();
   try {
     await loadMeta(true);
     await loadBacktestMeta();

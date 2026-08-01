@@ -99,6 +99,26 @@ button { cursor: pointer; }
 .dot-state.ok::before { background: #45c3a4; box-shadow: 0 0 0 3px rgba(69,195,164,.13); }
 .dot-state.bad::before { background: #e0696d; }
 .side-note { margin: 8px; color: #718797; font-size: 11px; }
+.market-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 22px 8px 8px;
+  padding: 4px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 10px;
+  background: rgba(0,0,0,.12);
+}
+.market-button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 7px;
+  color: #90a4b3;
+  background: transparent;
+  font-weight: 750;
+}
+.market-button.active { color: #102a43; background: var(--gold-light); }
+.market-hidden { visibility: hidden; pointer-events: none; }
 
 .workspace { margin-left: 238px; padding: 34px clamp(24px, 4vw, 58px) 38px; }
 .topbar {
@@ -429,6 +449,71 @@ footer { max-width: 1440px; margin: 30px auto 0; color: #8b969e; text-align: cen
 .toast.visible { transform: translateY(0); opacity: 1; }
 .toast.error { background: var(--red); }
 
+.futures-workspace { min-width: 0; }
+.futures-topbar { align-items: center; }
+.futures-selectors, .inline-selectors { display: flex; flex-wrap: wrap; gap: 10px; }
+.futures-selectors label, .inline-selectors label {
+  display: grid;
+  gap: 6px;
+  min-width: 210px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+}
+.futures-selectors select, .inline-selectors select { min-height: 40px; padding: 8px 10px; border-radius: 8px; }
+.futures-state {
+  max-width: 1440px;
+  margin: 0 auto 18px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  background: var(--surface);
+}
+.futures-state-error { color: var(--red); border-color: #e7b9ba; background: var(--red-soft); }
+.futures-hero {
+  max-width: 1440px;
+  margin: 0 auto 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr);
+  gap: 18px;
+}
+.futures-summary-card, .futures-quality-card {
+  min-width: 0;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.futures-summary-card { border-top: 3px solid var(--gold); }
+.futures-quality-card { border-top: 3px solid var(--navy-2); }
+.futures-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.futures-kpis > div { min-width: 0; padding: 17px; border-right: 1px solid var(--line); }
+.futures-kpis > div:last-child { border-right: 0; }
+.futures-kpis span, .futures-kpis small { display: block; color: var(--muted); font-size: 10px; }
+.futures-kpis strong { display: block; overflow-wrap: anywhere; margin: 5px 0; font: 700 clamp(18px, 2vw, 25px) Georgia, serif; }
+.futures-kpis.compact { margin-bottom: 18px; }
+.lineage-note { margin: 16px 0 0; color: var(--muted); overflow-wrap: anywhere; font-size: 11px; }
+.quality-callout { margin-bottom: 14px; padding: 12px; border-radius: 8px; color: #6d5930; background: #f7f0df; font-size: 12px; line-height: 1.6; }
+.coverage-grid { display: grid; gap: 8px; }
+.coverage-grid > div { display: grid; grid-template-columns: minmax(90px, 1fr) auto; gap: 3px 10px; padding: 9px 10px; border-radius: 7px; background: #f5f7f8; font-size: 10px; }
+.coverage-grid span { color: var(--muted); overflow-wrap: anywhere; }
+.coverage-grid small { grid-column: 1 / -1; color: #8b969e; }
+.outline-pill.ready { color: var(--green); border-color: #a8d8cc; }
+.outline-pill.blocked { color: var(--red); border-color: #e7b9ba; }
+.futures-card { min-width: 0; }
+.chart-controls { align-items: end; }
+.futures-chart { display: block; width: 100%; height: auto; min-height: 220px; border-radius: 10px; background: #fafbfb; }
+.futures-price-line { fill: none; stroke: var(--gold); stroke-width: 3; stroke-linejoin: round; }
+.roll-markers { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; color: var(--muted); font-size: 10px; }
+.roll-markers span { padding: 6px 9px; border-radius: 6px; background: #f5f7f8; }
+.roll-markers strong { color: var(--ink); }
+.issue-list { display: grid; gap: 8px; }
+.issue-item { display: grid; grid-template-columns: minmax(150px, .28fr) 1fr; gap: 12px; padding: 11px 13px; border-left: 3px solid var(--gold); border-radius: 7px; background: #f7f5ef; }
+.issue-item.critical { border-left-color: var(--red); background: var(--red-soft); }
+.issue-item strong { overflow-wrap: anywhere; font-size: 11px; }
+.issue-item span { color: var(--muted); overflow-wrap: anywhere; font-size: 11px; }
+
 @media (max-width: 1050px) {
   .sidebar { position: static; width: auto; min-height: auto; padding: 18px 22px; flex-direction: row; align-items: center; }
   .nav { margin: 0 0 0 auto; display: flex; }
@@ -438,6 +523,9 @@ footer { max-width: 1440px; margin: 30px auto 0; color: #8b969e; text-align: cen
   .candidate-layout { grid-template-columns: 1fr; }
   .backtest-layout { grid-template-columns: 1fr; }
   .candidate-detail { position: static; }
+  .market-switch { margin: 0 0 0 18px; min-width: 150px; }
+  .market-hidden { display: none; }
+  .futures-hero { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
   .sidebar { align-items: flex-start; }
@@ -466,4 +554,16 @@ footer { max-width: 1440px; margin: 30px auto 0; color: #8b969e; text-align: cen
   .daily-position-layout { grid-template-columns: 1fr; }
   .partition-form > div { grid-template-columns: 55px 1fr; }
   .partition-form span { display: none; }
+  .market-switch { width: 100%; margin: 14px 0 0; }
+  .futures-topbar { display: block; }
+  .futures-selectors { margin-top: 16px; }
+  .futures-selectors label, .inline-selectors label { min-width: 100%; width: 100%; }
+  .futures-kpis { grid-template-columns: 1fr 1fr; }
+  .futures-kpis > div:nth-child(2) { border-right: 0; }
+  .futures-kpis > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .chart-controls { display: block; }
+  .inline-selectors { margin-top: 14px; }
+  .issue-item { grid-template-columns: 1fr; gap: 4px; }
+  .futures-card { padding: 16px; }
+  .table-wrap { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 }

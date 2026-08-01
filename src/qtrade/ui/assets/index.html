@@ -16,6 +16,11 @@
         <span><strong>QTrade</strong><small>收盘研究工作台</small></span>
       </a>
 
+      <div id="marketSwitch" class="market-switch" role="group" aria-label="切换研究市场">
+        <button class="market-button active" data-market="equity">A 股</button>
+        <button class="market-button" data-market="futures">期货</button>
+      </div>
+
       <nav class="nav" aria-label="页面导航">
         <button class="nav-item active" data-scroll="overview">
           <span class="nav-icon">⌁</span> 今日决策
@@ -51,7 +56,7 @@
       <p class="side-note">仅在本机运行，不连接券商，不执行交易。</p>
     </aside>
 
-    <main class="workspace">
+    <main id="equityWorkspace" class="workspace">
       <header class="topbar">
         <div>
           <p class="eyebrow">A-SHARE RESEARCH DESK</p>
@@ -361,6 +366,95 @@
       <footer>
         <p>QTrade 是个人研究与风险观察工具，不构成投资建议，不连接券商执行交易。</p>
       </footer>
+    </main>
+
+    <main id="futuresWorkspace" class="workspace futures-workspace hidden">
+      <header class="topbar futures-topbar">
+        <div>
+          <p class="eyebrow">CHINA FUTURES RESEARCH DESK</p>
+          <h1>期货研究工作区</h1>
+          <p class="subtitle">只读展示冻结信号、实际合约与可追溯风险；不连接券商，不提供下单。</p>
+        </div>
+        <div class="futures-selectors">
+          <label>信号快照<select id="futuresSignalSelect"><option value="">自动选择最新正式快照</option></select></label>
+          <label>回测构建<select id="futuresBacktestSelect"><option value="">自动选择最新构建</option></select></label>
+        </div>
+      </header>
+
+      <div id="futuresLoading" class="futures-state" role="status">正在校验期货 manifest 与内容哈希…</div>
+      <div id="futuresError" class="futures-state futures-state-error hidden" role="alert"></div>
+
+      <div id="futuresContent" class="hidden">
+        <section class="futures-hero">
+          <article class="futures-summary-card">
+            <div class="card-head">
+              <div><span class="section-kicker">FORMAL SIGNAL</span><h2>今日信号与资金边界</h2></div>
+              <span id="futuresSignalStatus" class="outline-pill">—</span>
+            </div>
+            <div class="futures-kpis">
+              <div><span>信号日期</span><strong id="futuresSignalDate">—</strong><small id="futuresEligibleDate">可执行日 —</small></div>
+              <div><span>风险预算</span><strong id="futuresRiskBudget">—</strong><small id="futuresRiskUsed">实际风险 —</small></div>
+              <div><span>初始保证金</span><strong id="futuresInitialMargin">—</strong><small>目标组合</small></div>
+              <div><span>压力保证金</span><strong id="futuresStressMargin">—</strong><small>保守资金需求</small></div>
+            </div>
+            <p id="futuresProtocol" class="lineage-note"></p>
+          </article>
+          <article class="futures-quality-card">
+            <div class="card-head">
+              <div><span class="section-kicker">READINESS</span><h2>数据质量与阻断</h2></div>
+              <span id="futuresReadyState" class="outline-pill">—</span>
+            </div>
+            <div id="futuresQualitySummary" class="quality-callout"></div>
+            <div id="futuresCoverage" class="coverage-grid"></div>
+          </article>
+        </section>
+
+        <section id="futuresSignals" class="content-card futures-card">
+          <div class="card-head">
+            <div><span class="section-kicker">PRODUCT TO CONTRACT</span><h2>品种信号与实际目标合约</h2><p>品种方向来自连续序列；合约代码和手数才是可执行映射。</p></div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>品种</th><th>实际合约</th><th>板块</th><th>方向</th><th class="number">手数</th><th class="number">信号强度</th><th class="number">初始保证金</th><th class="number">压力保证金</th><th>状态</th></tr></thead><tbody id="futuresSignalRows"></tbody></table></div>
+        </section>
+
+        <section id="futuresPositions" class="content-card futures-card">
+          <div class="card-head">
+            <div><span class="section-kicker">ACTUAL PORTFOLIO</span><h2>当前实际合约持仓</h2><p id="futuresPortfolioDate">账本日期 —</p></div>
+            <span id="futuresPortfolioEquity" class="outline-pill">权益 —</span>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>实际合约</th><th>方向</th><th class="number">手数</th><th class="number">乘数</th><th class="number">结算基准</th></tr></thead><tbody id="futuresPositionRows"></tbody></table></div>
+        </section>
+
+        <section class="content-card futures-card chart-card">
+          <div class="card-head chart-controls">
+            <div><span class="section-kicker">POINT-IN-TIME CHART</span><h2>连续研究序列 / 实际合约行情</h2></div>
+            <div class="inline-selectors">
+              <label>品种<select id="futuresProductSelect"></select></label>
+              <label>序列<select id="futuresSeriesMode"><option value="continuous">连续研究序列</option><option value="actual">实际合约行情</option></select></label>
+            </div>
+          </div>
+          <div id="futuresChartEmpty" class="empty-inline hidden">没有经过哈希校验的图表数据。</div>
+          <svg id="futuresChart" class="futures-chart" viewBox="0 0 1000 360" role="img" aria-label="期货连续或实际合约价格图"></svg>
+          <div id="futuresRollMarkers" class="roll-markers"></div>
+        </section>
+
+        <section class="content-card futures-card">
+          <div class="card-head"><div><span class="section-kicker">VALIDATION RESULT</span><h2>回测与稳健性结果</h2></div><span id="futuresBacktestPassed" class="outline-pill">—</span></div>
+          <div class="futures-kpis compact">
+            <div><span>期初权益</span><strong id="futuresBtInitial">—</strong></div>
+            <div><span>期末权益</span><strong id="futuresBtFinal">—</strong></div>
+            <div><span>总收益</span><strong id="futuresBtReturn">—</strong></div>
+            <div><span>最大回撤</span><strong id="futuresBtDrawdown">—</strong></div>
+          </div>
+          <div id="futuresBacktestIssues" class="issue-list"></div>
+        </section>
+
+        <section id="futuresQuality" class="content-card futures-card">
+          <div class="card-head"><div><span class="section-kicker">AUDIT TRAIL</span><h2>研究谱系与明确阻断</h2></div></div>
+          <div id="futuresIssues" class="issue-list"></div>
+        </section>
+      </div>
+
+      <footer><p>QTrade 期货工作区仅用于研究和影子观察；所有正式展示均来自不可变产物及哈希校验，不构成投资建议。</p></footer>
     </main>
   </div>
   <div id="toast" class="toast" role="status"></div>

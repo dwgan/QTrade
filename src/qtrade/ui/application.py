@@ -18,6 +18,7 @@ import polars as pl
 from qtrade.data.storage import ParquetDatasetStore
 from qtrade.domain import Dataset
 from qtrade.research.protocols import ExperimentStore, PartitionName, ProtocolStore
+from qtrade.ui.futures import FuturesUiRepository
 
 REPORT_NAMES = (
     "market",
@@ -27,6 +28,15 @@ REPORT_NAMES = (
 )
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SYMBOL_PATTERN = re.compile(r"^\d{6}\.(SH|SZ|BJ)$")
+
+
+def create_futures_ui_repository(
+    curated_root: Path,
+    reports_root: Path,
+    provider: str,
+) -> FuturesUiRepository:
+    """Build the read-only futures projection used by the local UI."""
+    return FuturesUiRepository(curated_root, reports_root, provider)
 
 
 def _load_json(path: Path) -> dict[str, Any] | None:

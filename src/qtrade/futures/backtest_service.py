@@ -390,6 +390,10 @@ class FuturesBacktestService:
         try:
             for name, filename in self.OUTPUT_FILES.items():
                 pl.DataFrame(rows[name]).write_parquet(temporary / filename, compression="zstd")
+            manifest["output_versions"] = [
+                self._file_version(temporary / filename, base=temporary)
+                for filename in self.OUTPUT_FILES.values()
+            ]
             self._atomic_json(temporary / "manifest.json", manifest)
             os.replace(temporary, output_dir)
         except Exception:
