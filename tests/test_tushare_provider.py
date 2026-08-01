@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Any
 
 import pandas as pd
 
@@ -173,6 +174,83 @@ def test_tushare_client_uses_optional_api_gateway(monkeypatch) -> None:
     )
 
     assert provider._client._DataApi__http_url == "https://example.test/api"
+
+
+class FakeMcpResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self.payload
+
+
+def test_tushare_ft_limit_can_page_through_documented_mcp_gateway(
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    failed_once = False
+
+    def fake_post(url, *, json, headers, timeout):
+        nonlocal failed_once
+        assert url == "https://example.test/mcp/token=secret"
+        assert headers["Accept"] == "application/json, text/event-stream"
+        assert timeout == 60
+        arguments = json["params"]["arguments"]
+        calls.append(arguments)
+        offset = arguments["params"]["offset"]
+        if not failed_once:
+            failed_once = True
+            return FakeMcpResponse(
+                {
+                    "result": {
+                        "content": [{"type": "text", "text": "错误: context cancelled"}],
+                    }
+                }
+            )
+        rows = {
+            0: "20260724,CU2608.SHF,85000,71000,10,CU,SHFE",
+            1: "20260724,AL2608.SHF,22000,18000,10,AL,SHFE",
+        }
+        text = (
+            "trade_date,ts_code,up_limit,down_limit,m_ratio,cont,exchange\n"
+            + rows[offset]
+            + "\n... 共 2 条，仅显示前 1 条"
+        )
+        return FakeMcpResponse(
+            {
+                "result": {
+                    "content": [{"type": "text", "text": text}],
+                }
+            }
+        )
+
+    monkeypatch.setenv("TEST_MCP_URL", "https://example.test/mcp/token=secret")
+    monkeypatch.setattr("requests.post", fake_post)
+    provider = TushareProvider(
+        ProviderConfig(
+            mcp_url_env="TEST_MCP_URL",
+            request_pause_seconds=0,
+        ),
+        MarketConfig(),
+        client=object(),
+    )
+
+    frame = provider.query(
+        "ft_limit",
+        trade_date="20260724",
+        fields="trade_date,ts_code,up_limit,down_limit,m_ratio,cont,exchange",
+        mcp_page_size=1,
+    )
+
+    assert frame.get_column("ts_code").to_list() == ["CU2608.SHF", "AL2608.SHF"]
+    assert frame.get_column("up_limit").to_list() == [85000.0, 22000.0]
+    assert frame.get_column("source_transport").unique().to_list() == ["mcp_query_data"]
+    assert frame.get_column("source_reported_total").unique().to_list() == [2]
+    assert [call["params"]["offset"] for call in calls] == [0, 0, 1]
+    assert all(call["api_name"] == "ft_limit" for call in calls)
 
 
 def test_tushare_conversion_normalizes_nan_in_mixed_columns() -> None:

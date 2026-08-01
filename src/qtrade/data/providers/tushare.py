@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import csv
+import io
+import re
 import time
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
 import polars as pl
+import requests
 
 from qtrade.config import MarketConfig, ProviderConfig
 from qtrade.domain import DataBatch, Dataset, FetchRequest
@@ -119,7 +123,119 @@ class TushareProvider:
     def query(self, operation: str, **params: Any) -> pl.DataFrame:
         if operation not in self.FUTURES_OPERATIONS:
             raise ValueError(f"Unsupported Tushare query operation: {operation}")
+        if operation == "ft_limit" and self._config.mcp_url():
+            return self._query_mcp(operation, **params)
         return self._call(getattr(self._client, operation), **params)
+
+    def _query_mcp(self, operation: str, **params: Any) -> pl.DataFrame:
+        url = self._config.mcp_url()
+        if not url:
+            raise RuntimeError("Tushare MCP URL is not configured.")
+        page_size = int(params.pop("mcp_page_size", 50))
+        if page_size < 1 or page_size > 50:
+            raise ValueError("Tushare MCP page size must be between 1 and 50.")
+        fields = str(params.pop("fields", ""))
+        rows: list[dict[str, str]] = []
+        offset = 0
+        total: int | None = None
+        first_keys: set[tuple[str | None, str | None]] = set()
+        while total is None or offset < total:
+            page_params = {**params, "limit": page_size, "offset": offset}
+            arguments: dict[str, Any] = {
+                "api_name": operation,
+                "params": page_params,
+            }
+            if fields:
+                arguments["fields"] = fields
+            payload = {
+                "jsonrpc": "2.0",
+                "id": offset + 1,
+                "method": "tools/call",
+                "params": {"name": "query_data", "arguments": arguments},
+            }
+            body = self._post_mcp(url, payload)
+            if error := body.get("error"):
+                raise RuntimeError(f"Tushare MCP request failed: {error}")
+            result = body.get("result") or {}
+            content = result.get("content") or []
+            text = next(
+                (item.get("text", "") for item in content if item.get("type") == "text"),
+                "",
+            )
+            if result.get("isError"):
+                raise RuntimeError(f"Tushare MCP request failed: {text}")
+            match = re.search(r"共\s*(\d+)\s*条", text)
+            if match:
+                total = int(match.group(1))
+            csv_text = "\n".join(
+                line for line in text.splitlines() if not line.startswith("...")
+            )
+            page = list(csv.DictReader(io.StringIO(csv_text))) if csv_text.strip() else []
+            if not page:
+                if total is not None and offset < total:
+                    raise RuntimeError(
+                        f"Tushare MCP pagination ended at {offset} rows before total {total}."
+                    )
+                break
+            first_key = (page[0].get("trade_date"), page[0].get("ts_code"))
+            if first_key in first_keys:
+                raise RuntimeError("Tushare MCP pagination did not advance.")
+            first_keys.add(first_key)
+            rows.extend(page)
+            offset += len(page)
+            if total is None and len(page) < page_size:
+                break
+            if self._config.request_pause_seconds:
+                time.sleep(self._config.request_pause_seconds)
+        frame = pl.DataFrame(rows, infer_schema_length=None, strict=False)
+        numeric_columns = [
+            name for name in ("up_limit", "down_limit", "m_ratio") if name in frame.columns
+        ]
+        return frame.with_columns(
+            *(
+                pl.col(name).cast(pl.Float64, strict=False).alias(name)
+                for name in numeric_columns
+            ),
+            pl.lit("mcp_query_data").alias("source_transport"),
+            pl.lit(total).cast(pl.Int64).alias("source_reported_total"),
+        )
+
+    def _post_mcp(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        last_error: Exception | None = None
+        for attempt in range(1, self._config.retry_attempts + 1):
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    headers={"Accept": "application/json, text/event-stream"},
+                    timeout=60,
+                )
+                response.raise_for_status()
+                body = response.json()
+                result = body.get("result") or {}
+                content = result.get("content") or []
+                text = next(
+                    (
+                        item.get("text", "")
+                        for item in content
+                        if item.get("type") == "text"
+                    ),
+                    "",
+                )
+                if body.get("error") or result.get("isError") or text.startswith(
+                    ("错误:", "Error:")
+                ):
+                    raise RuntimeError(text or str(body.get("error")))
+                return body
+            except (requests.RequestException, RuntimeError, ValueError) as exc:
+                last_error = exc
+                if attempt < self._config.retry_attempts:
+                    time.sleep(self._config.request_pause_seconds * attempt)
+        assert last_error is not None
+        raise RuntimeError(
+            f"Tushare MCP request failed after {self._config.retry_attempts} attempts: "
+            f"{last_error}"
+        ) from last_error
 
     def _fetch_trade_calendar(self, request: FetchRequest) -> tuple[pl.DataFrame, dict[str, Any]]:
         params = {

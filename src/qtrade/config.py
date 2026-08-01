@@ -36,6 +36,7 @@ class ProviderConfig(BaseModel):
     name: str = "tushare"
     token_env: str = "TUSHARE_TOKEN"
     api_url_env: str = "TUSHARE_API_URL"
+    mcp_url_env: str = "TUSHARE_MCP_URL"
     request_pause_seconds: float = Field(default=0.2, ge=0)
     retry_attempts: int = Field(default=3, ge=1, le=10)
     parallel_requests: int = Field(default=3, ge=1, le=5)
@@ -51,6 +52,9 @@ class ProviderConfig(BaseModel):
 
     def api_url(self) -> str | None:
         return os.getenv(self.api_url_env, "").strip() or None
+
+    def mcp_url(self) -> str | None:
+        return os.getenv(self.mcp_url_env, "").strip() or None
 
 
 class MarketConfig(BaseModel):
