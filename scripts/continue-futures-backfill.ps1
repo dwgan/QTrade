@@ -9,6 +9,14 @@ $python = Join-Path $workspace ".venv\Scripts\python.exe"
 $config = Join-Path $workspace "config\base.yaml"
 $logPath = Join-Path $runtime "continue-futures-backfill.log"
 $lockPath = Join-Path $runtime "continue-futures-backfill.lock"
+$expectedTradingDays = @{
+    2015 = 244
+    2016 = 244
+    2017 = 244
+    2018 = 243
+    2019 = 244
+    2020 = 243
+}
 
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
 
@@ -75,14 +83,43 @@ function Invoke-BackfillYear {
     throw "Backfill stopped after $MaxAttemptsPerYear attempts: year=$Year datasets=$Datasets"
 }
 
+function Test-DatasetYearComplete {
+    param(
+        [string]$Dataset,
+        [int]$Year
+    )
+
+    $providerRoot = Join-Path $workspace `
+        "data\curated\futures\$Dataset\provider=tushare"
+    if (-not (Test-Path -LiteralPath $providerRoot -PathType Container)) {
+        return $false
+    }
+    $count = @(
+        Get-ChildItem -LiteralPath $providerRoot -Directory `
+            -Filter "as_of_date=$Year-*" |
+            Where-Object {
+                Test-Path -LiteralPath (Join-Path $_.FullName "data.parquet") `
+                    -PathType Leaf
+            }
+    ).Count
+    return $count -ge $expectedTradingDays[$Year]
+}
+
 try {
     Initialize-ProviderEnvironment
     Set-Location -LiteralPath $workspace
     foreach ($year in 2020..2015) {
-        Invoke-BackfillYear -Year $year -Datasets "futures_limits"
+        if (Test-DatasetYearComplete -Dataset "futures_limits" -Year $year) {
+            Write-BackfillLog "skip-complete year=$year datasets=futures_limits"
+        } else {
+            Invoke-BackfillYear -Year $year -Datasets "futures_limits"
+        }
     }
     foreach ($year in 2020..2015) {
-        Invoke-BackfillYear -Year $year -Datasets "futures_daily,futures_settlements"
+        Invoke-BackfillYear -Year $year -Datasets "futures_daily"
+    }
+    foreach ($year in 2020..2015) {
+        Invoke-BackfillYear -Year $year -Datasets "futures_settlements"
     }
     Write-BackfillLog "all requested futures backfills complete"
 } catch {

@@ -134,6 +134,31 @@ class InactiveContractFuturesDataSource(FakeFuturesDataSource):
         return frame
 
 
+class MisleadingCalendarFuturesDataSource(FakeFuturesDataSource):
+    def query(self, operation: str, **params: Any) -> pl.DataFrame:
+        if operation == "trade_cal":
+            return pl.DataFrame(
+                {
+                    "exchange": ["SHFE", "SHFE", "SHFE"],
+                    "cal_date": ["20200101", "20200102", "20200103"],
+                    "is_open": [1, 1, 1],
+                    "pretrade_date": ["20191231", "20191231", "20200102"],
+                }
+            )
+        if operation in {"fut_daily", "fut_settle"} and params["trade_date"] == "20200101":
+            return pl.DataFrame()
+        return super().query(operation, **params)
+
+
+class RejectExistingDatasetRefetchSource(FakeFuturesDataSource):
+    reject_daily = False
+
+    def query(self, operation: str, **params: Any) -> pl.DataFrame:
+        if operation == "fut_daily" and self.reject_daily:
+            raise AssertionError("existing daily partition must not be fetched again")
+        return super().query(operation, **params)
+
+
 def make_service(
     tmp_path: Path,
     source: FakeFuturesDataSource | None = None,
@@ -236,6 +261,28 @@ def test_backfill_skips_existing_required_partitions(tmp_path: Path) -> None:
     assert second.skipped_dates == 2
 
 
+def test_backfill_fetches_only_missing_dataset_for_partial_date(tmp_path: Path) -> None:
+    source = RejectExistingDatasetRefetchSource()
+    service = make_service(tmp_path, source)
+    trading_date = date(2026, 7, 23)
+    assert service.update(trading_date, (FuturesDataset.DAILY,)).succeeded
+    source.reject_daily = True
+
+    result = service.backfill(
+        trading_date,
+        trading_date,
+        (FuturesDataset.DAILY, FuturesDataset.SETTLEMENTS),
+    )
+
+    assert result.succeeded
+    assert result.completed_dates == 1
+    assert service.curated_store.exists(
+        FuturesDataset.SETTLEMENTS,
+        "fake",
+        trading_date,
+    )
+
+
 def test_backfill_stops_when_requested_optional_dataset_is_unavailable(
     tmp_path: Path,
 ) -> None:
@@ -252,6 +299,31 @@ def test_backfill_stops_when_requested_optional_dataset_is_unavailable(
 
     assert result.completed_dates == 0
     assert result.failed_dates == [date(2026, 7, 23)]
+
+
+def test_backfill_skips_false_open_calendar_day_confirmed_by_limits(
+    tmp_path: Path,
+) -> None:
+    service = make_service(tmp_path, MisleadingCalendarFuturesDataSource())
+    for trading_date in (date(2020, 1, 2), date(2020, 1, 3)):
+        limits = service.update(trading_date, (FuturesDataset.LIMITS,))
+        assert limits.succeeded
+
+    result = service.backfill(
+        date(2020, 1, 1),
+        date(2020, 1, 3),
+        (FuturesDataset.DAILY, FuturesDataset.SETTLEMENTS),
+    )
+
+    assert result.succeeded
+    assert result.trading_dates == 2
+    assert result.completed_dates == 2
+    assert result.skipped_dates == 0
+    assert not service.curated_store.exists(
+        FuturesDataset.DAILY,
+        "fake",
+        date(2020, 1, 1),
+    )
 
 
 def test_contract_backfill_partitions_bulk_response_by_date(

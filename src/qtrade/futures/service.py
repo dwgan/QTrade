@@ -222,20 +222,33 @@ class FuturesDataService:
     ) -> FuturesBackfillResult:
         if start_date > end_date:
             raise ValueError("Futures backfill start date must not exceed end date.")
+        archived_limit_dates = set(
+            self.curated_store.available_dates(
+                FuturesDataset.LIMITS,
+                self.source.name,
+                start_date,
+                end_date,
+            )
+        )
         dates = self._open_dates(start_date, end_date)
+        if archived_limit_dates and set(datasets) <= {
+            FuturesDataset.DAILY,
+            FuturesDataset.SETTLEMENTS,
+        }:
+            dates = [value for value in dates if value in archived_limit_dates]
         result = FuturesBackfillResult(start_date, end_date, len(dates))
         for trading_date in dates:
-            if all(
-                self.curated_store.exists(
-                    dataset,
-                    self.source.name,
-                    trading_date,
-                )
+            missing_datasets = tuple(
+                dataset
                 for dataset in datasets
-            ):
+                if not self.curated_store.exists(
+                    dataset, self.source.name, trading_date
+                )
+            )
+            if not missing_datasets:
                 result.skipped_dates += 1
                 continue
-            update = self.update(trading_date, datasets)
+            update = self.update(trading_date, missing_datasets)
             all_requested_completed = all(
                 item.status == "completed" for item in update.datasets
             )
